@@ -132,6 +132,37 @@ class EmptyHouseEngineTest {
             .publishInfo("Nobody is at home since 17:00 - the presence simulation runs until the sunrise at 07:00.");
     }
 
+    //no plan stored: nothing is simulated, so nothing is announced
+    @Test
+    void should_announce_no_simulation_without_a_plan() {
+        when(simulationPlanService.get()).thenReturn(Mono.just(SimulationPlan.NONE));
+        now.set(DAY.atTime(17, 0));
+        tick();
+        now.set(DAY.atTime(18, 0));
+        tick();
+
+        verify(notificationPublisher, never()).publishInfo(anyString());
+    }
+
+    //the day could not confirm switching a light off; at night the simulation still lights it
+    @Test
+    void should_start_the_guard_anew_from_day_to_night() {
+        now.set(DAY.atTime(16, 0));
+        tick();
+        when(lightStateTracker.status(KITCHEN_CEILING.id())).thenReturn(Mono.just(on("dashboard", DAY.atTime(15, 0))));
+        now.set(DAY.atTime(16, 10));
+        tick();
+        now.set(DAY.atTime(18, 0));
+        tick();
+
+        verify(lightCommandService).turn(KITCHEN_CEILING.id(), Turn.OFF, CommandSource.EMPTY_HOUSE);
+        verify(lightCommandService, never()).turn(KITCHEN_CEILING.id(), Turn.ON, CommandSource.EMPTY_HOUSE);
+        when(lightStateTracker.status(KITCHEN_CEILING.id())).thenReturn(Mono.just(off()));
+        now.set(DAY.atTime(18, 1));
+        tick();
+        verify(lightCommandService).turn(KITCHEN_CEILING.id(), Turn.ON, CommandSource.EMPTY_HOUSE);
+    }
+
     //a database away at night: the pass is skipped - taken for no plan it would switch the simulation off
     @Test
     void should_skip_a_night_pass_whose_plan_cannot_be_read() {

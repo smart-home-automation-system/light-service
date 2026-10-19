@@ -73,6 +73,7 @@ public class EmptyHouseEngine {
     private final Map<Long, LocalDateTime> commandedAt = new ConcurrentHashMap<>();
     private volatile boolean dayAnnounced;
     private volatile boolean nightAnnounced;
+    private volatile Boolean lastNight;
 
     //Spring subscribes again to the same Mono for every run: everything is read inside the chain
     @Scheduled(initialDelayString = "PT1M", fixedDelayString = "PT1M")
@@ -88,6 +89,7 @@ public class EmptyHouseEngine {
                     final LocalDateTime now = now();
                     if (houseState.update(read, now, properties.after())) {
                         commandedAt.clear();
+                        lastNight = null;
                         dayAnnounced = false;
                         nightAnnounced = false;
                     }
@@ -127,6 +129,12 @@ public class EmptyHouseEngine {
     private Mono<Void> act(final LocalDateTime now) {
         return night(now, true).flatMap(night -> {
             final boolean isNight = night.contains(now);
+            //from day to night and back the guard starts anew: a light the day could not switch off may still be
+            //lit by the simulation
+            if (lastNight != null && lastNight != isNight) {
+                commandedAt.clear();
+            }
+            lastNight = isNight;
             final Set<Long> lit = isNight ? night.lightsAt(now) : Set.of();
             final List<Light> lights = lightRegistry.current();
             return Flux.fromIterable(lights)
@@ -134,7 +142,7 @@ public class EmptyHouseEngine {
                     light, status, commandedAt.get(light.id()))))
                 .collectList()
                 .flatMap(snapshots -> {
-                    final List<RuleAction> actions = EmptyHouseEvaluator.decide(snapshots, lit, isNight);
+                    final List<RuleAction> actions = EmptyHouseEvaluator.decide(snapshots, lit, isNight, houseState.emptySince());
                     actions.forEach(action -> commandedAt.put(action.light().id(), now));
                     return run(actions, now).then(announce(isNight, night, actions));
                 });
@@ -203,7 +211,8 @@ public class EmptyHouseEngine {
     private Mono<Void> announce(final boolean isNight, final Night night, final List<RuleAction> actions) {
         final LocalDateTime since = houseState.emptySince();
         final String sinceText = since == null ? "a while" : since.format(HOUR);
-        if (isNight && !nightAnnounced) {
+        //no plan, or no phase on: nothing to announce
+        if (isNight && !nightAnnounced && !night.segments().isEmpty()) {
             nightAnnounced = true;
             return publish("Nobody is at home since " + sinceText + " - the presence simulation runs until the sunrise at "
                 + night.sunrise().format(HOUR) + ".");

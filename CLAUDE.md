@@ -238,9 +238,15 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
     PT10M, 1 min - 2 h, minutes), or they would switch the simulation off.
   - **`EmptyHouseEvaluator`** (pure): what should be lit - nothing by day, the simulation of the minute by night -
     against the state; a light known on that should not be goes off, one that should be lit and is not known on
-    goes on. **No manual hold** (nobody is at home), the once-guard of the rules. Source `empty-house` (starts no
+    goes on. **Never against a person**: a light whose change came after `emptySince` from a source that is not
+    the service (a wall switch, the dashboard, the Shelly app - a cleaner or a guest the registry does not know)
+    is left alone until the house is occupied again; before `emptySince` it was the household, so a forgotten
+    light. The once-guard of the rules, started anew from day to night and back. Source `empty-house` (starts no
     hold), reason `empty-house` by day or `presence-simulation` in `light_rule_run`. One info notification per
-    empty house for the lights switched off by day (their rooms), one when the simulation starts.
+    empty house for the lights switched off by day (their rooms, not at the sunrise after a night of simulation),
+    one when the simulation starts and has something to light. A plan that cannot be read at night skips the
+    pass (taken for no plan it would switch the simulation off and on). The plan is read every minute of an
+    empty night - kept on purpose, like the rules.
     `light.empty-house.enabled: false` keeps it from acting; it is still watched and answered.
   - **`SimulationPlanner`** (pure, `SimulationPlannerTest` over 60 nights): the night of a date is its civil dusk
     to the next sunrise (`SunCalendar` - **a copy of the one of blinds-service**, with the civil dusk; the second

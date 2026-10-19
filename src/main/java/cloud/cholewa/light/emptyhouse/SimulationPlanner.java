@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Random;
 import java.util.Set;
+import java.util.stream.Stream;
 
 //The night of the presence simulation (HAS-263), worked out from the plan, the sun and the date - pure, with
 //no I/O and no clock, pinned by SimulationPlannerTest. The same night always comes out the same (the random
@@ -72,7 +73,7 @@ public final class SimulationPlanner {
         /** The next time after the given one at which what is lit changes. */
         public Optional<LocalDateTime> nextChangeAfter(final LocalDateTime time) {
             return segments.stream()
-                .flatMap(segment -> java.util.stream.Stream.of(segment.from(), segment.to()))
+                .flatMap(segment -> Stream.of(segment.from(), segment.to()))
                 .filter(boundary -> boundary.isAfter(time))
                 .min(Comparator.naturalOrder());
         }
