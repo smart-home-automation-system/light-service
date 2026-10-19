@@ -4,7 +4,7 @@ import cloud.cholewa.home.model.RoomName;
 import cloud.cholewa.light.model.rule.RoomRule;
 import org.springframework.stereotype.Component;
 
-import java.util.HashMap;
+import java.util.EnumMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -31,7 +31,8 @@ public class RuleBook {
 
     void put(final RoomName room, final RoomRule rule) {
         rules.updateAndGet(held -> {
-            final Map<RoomName, RoomRule> changed = new HashMap<>(held);
+            final Map<RoomName, RoomRule> changed = new EnumMap<>(RoomName.class);
+            changed.putAll(held);
             changed.put(room, rule);
             return Map.copyOf(changed);
         });
@@ -39,7 +40,8 @@ public class RuleBook {
 
     void remove(final RoomName room) {
         rules.updateAndGet(held -> {
-            final Map<RoomName, RoomRule> changed = new HashMap<>(held);
+            final Map<RoomName, RoomRule> changed = new EnumMap<>(RoomName.class);
+            changed.putAll(held);
             changed.remove(room);
             return Map.copyOf(changed);
         });

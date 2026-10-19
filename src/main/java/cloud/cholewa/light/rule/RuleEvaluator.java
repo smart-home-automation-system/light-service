@@ -180,7 +180,7 @@ public final class RuleEvaluator {
             if (occupancy.occupied() == null) {
                 return new Emptiness(null, "its presence sensor is not known");
             }
-            if (occupancy.occupied()) {
+            if (Boolean.TRUE.equals(occupancy.occupied())) {
                 return new Emptiness(null, null);
             }
             //nobody by the presence sensor, and no motion since it said so

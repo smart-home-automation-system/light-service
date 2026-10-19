@@ -74,7 +74,7 @@ public class RuleEngine {
     private final Map<Long, LocalDateTime> commandedAt = new ConcurrentHashMap<>();
     private final Map<RoomName, LocalDateTime> skipLoggedAt = new ConcurrentHashMap<>();
     //zero in the tests
-    Duration settle = SETTLE;
+    Duration settleDelay = SETTLE;
 
     //Spring subscribes again to the same Mono for every run: everything is read inside the chain
     @Scheduled(initialDelayString = "PT1M", fixedDelayString = "PT1M")
@@ -106,7 +106,7 @@ public class RuleEngine {
             if (rule == null || !rule.enabledByResident() || !rule.motionOnEnabled()) {
                 return Mono.empty();
             }
-            (settle.isZero() ? Mono.<Void>empty() : Mono.delay(settle).then())
+            (settleDelay.isZero() ? Mono.<Void>empty() : Mono.delay(settleDelay).then())
                 .then(Mono.defer(() -> decide(room, rule, snapshot -> RuleEvaluator.motion(snapshot, now()))))
                 .flatMap(decision -> run(room, decision))
                 .onErrorResume(e -> {

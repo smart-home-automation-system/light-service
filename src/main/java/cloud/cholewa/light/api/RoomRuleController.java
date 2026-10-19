@@ -75,7 +75,7 @@ public class RoomRuleController {
         if (!to.isAfter(from)) {
             throw new ServerWebInputException("to is after from");
         }
-        if (Duration.between(from, to).compareTo(MAX_RUNS_SPAN) > 0) {
+        if (to.isAfter(from.plus(MAX_RUNS_SPAN))) {
             throw new ServerWebInputException("from and to are at most 7 days apart");
         }
         return roomRuleService.runs(name, from, to);

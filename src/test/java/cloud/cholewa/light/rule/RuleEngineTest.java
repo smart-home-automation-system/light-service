@@ -87,7 +87,7 @@ class RuleEngineTest {
 
     @BeforeEach
     void setUp() {
-        engine.settle = Duration.ZERO;
+        engine.settleDelay = Duration.ZERO;
         when(lightRegistry.current()).thenReturn(List.of(BEDROOM_CEILING, BEDROOM_RELAY, HALL_LEFT, HALL_DIMMER, HALL_RELAY));
         when(lightStateTracker.status(anyLong())).thenReturn(Mono.just(off()));
         when(lightCommandService.turn(anyLong(), any(), any())).thenReturn(Mono.empty());
