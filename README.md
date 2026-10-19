@@ -118,8 +118,8 @@ Everything is non-blocking (Spring WebFlux / Reactor):
 
 # API
 
-Base path `/home/light` (`spring.webflux.base-path`). Not routed by `api-gateway-service` yet
-(HAS-265). Every command answers **202** once the device (or `amx-service`) took it - never once
+Base path `/home/light` (`spring.webflux.base-path`), routed by `api-gateway-service` >= 0.8.0
+(`/home/light`, `/home/light/**`, every method - HAS-265). Every command answers **202** once the device (or `amx-service`) took it - never once
 the light is on. `source` is `dashboard` (the default), `rule` or `empty-house`; every value is
 taken exactly as written.
 
