@@ -5,7 +5,9 @@ they are really on and switching them by the rules of each room - motion, presen
 house. Since HAS-257 it consumes the device events; since HAS-258 it knows the lights from the
 device registry and switches them on command through three drivers (`POST /home/light/...`);
 since HAS-259 it tracks the real state of every light from what the devices report and serves it
-(`GET /home/light`, `/rooms/{room}`, `/{id}`).
+(`GET /home/light`, `/rooms/{room}`, `/{id}`); since HAS-260 it knows from the presence and motion
+sensors whether a room is occupied, when it last saw motion and how light it is (`GET
+/home/light/rooms/{room}/occupancy`, and the same object inside the room read).
 
 Part of the smart-home-automation-system organization — org-wide conventions, the
 repository map and working rules come from the workspace-level context
@@ -20,8 +22,8 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
   (who is at home) over k8s DNS (`internal.service.*`). The command endpoints (README) are not
   routed by `api-gateway-service` yet (HAS-265); the dashboard will branch on their codes.
 - Uses libraries: `cholewa-commons` 1.9.0 (pool, error contract, `DownstreamErrors`, connection
-  names, `NotificationPublisher`, `cholewa.required-properties`), `smart-home-sdk` 1.11.0
-  (`SmartDevice` and `LightKind` of the registry), `shelly-client` 2.1.0 (`ShellyGen1Client`,
+  names, `NotificationPublisher`, `cholewa.required-properties`), `smart-home-sdk` 1.12.0
+  (`SmartDevice` and `LightKind` of the registry; a zone as the channel of a presence sensor), `shelly-client` 2.1.0 (`ShellyGen1Client`,
   `ShellyRpcClient`; `ShellyHttpClientCustomizer` puts their calls into the log).
 - Database: own database `home-automation-light`, pool `database.pool.max-size: 2` (heating 2 /
   database 4 / water 2 / presence 2 / blinds 2 / weather 2 / light 2 = 16 of 22), pinned by
@@ -110,7 +112,7 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
     answer is a status event like any other. A light that cannot be asked is a WARN, never repeated.
 - **The reads leave out what is not known** (`LightView`, `NON_NULL`): nothing before the first
   report, no brightness of a relay, no `reachable` after a restart; a room's `anyOn` is left out
-  while a light of it is unknown. The occupancy of a room joins with HAS-260.
+  while a light of it is unknown. A room read carries `occupancy` (HAS-260, below).
 - **One instance, `Recreate`, never scaled**: the rules engine will live in its memory.
   `@EnableScheduling` is in `SchedulingConfig` under `@Profile("!test")`.
 - **The test document points everything outward at port 1** (broker, database, the three
@@ -136,3 +138,31 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
 - **Surefire activates the `test` profile for every class**; the `includes` match only
   `**/*Test.java` and `**/*IT.java`. Tests use `mockwebserver3`, and a publisher is verified as
   `publisher.as(StepVerifier::create)` only.
+- **The occupancy of a room** (HAS-260), package `occupancy`, all in memory - **a room is unknown
+  after a start, never empty**, and no rule may act on an unknown room:
+  - **The sensors are the registry's** (`OccupancyRegistry`, with the gateways, every five minutes in
+    `OccupancyRefresh`; a failed read keeps the last lists): a `presence sensor` is a Shelly Gen2+ with
+    its MQTT id and **a zone as its channel** (200-299, database-service >= 0.17.0; the three Presence
+    Gen4 are 91-93 on zone 200); a `motion sensor` is a BLU Motion (`bthome`), a Shelly Motion Gen1 or a
+    PIR of the AMX system. Anything else is skipped with a WARN.
+  - **The rules are `OccupancyTracker`**, pinned by `OccupancyTrackerTest`: occupied when one presence
+    sensor says so, empty when every one does, otherwise not known - a Presence that left the broker
+    is not known; `lastMotionAt` the newest motion of any motion sensor; `illumination` (the word of a
+    Presence: dark / twilight / bright at its 10 / 50 lx) and `lux` (a number, BLU Motion or Shelly
+    Motion) each the newest of the room; `since` when the service saw the occupancy change.
+  - **Which channel says what**: Presence - MQTT `status.presencezone:<zone>` (only its own zone: the
+    office device has a second zone, `Door`, which nobody reads), `status.illuminance:0`, `online`;
+    every five minutes `OccupancyReads` reads the zone (`Shelly.GetComponents` - it is a dynamic
+    component) and `illuminance:0`, **never deciding whether the device is reachable** (MQTT owns
+    it, as for the lights). BLU Motion - the `bthomesensor` components of object `0x21` (motion) and
+    `0x05` (lux) of every registered gateway, mapped by `addr` every five minutes, then their status
+    topics; the later `last_updated_ts` wins; reachable while a gateway confirmed it within
+    `light.occupancy.gateway-silent-after` (`OccupancyProperties`, PT30M, 10 min - 24 h, minutes) -
+    the rule of the window sensors of blinds-service. Shelly Motion Gen1 - `GET
+    /events/gen1?device=<id>&event=motion|motion_end[&lux=]` from its `motion_on` / `motion_off`
+    actions (no `end_of_motion` on fw v2.2.4); it sleeps, so no reachability. Eaton PIR - `switch on`
+    / `switch off` on `eaton.<gateway>.<point>`; no reachability either.
+  - `DeviceEventConsumer` hands every event to both routers, each with its own error handling.
+  - **On 2026-10-19 no BLU Motion was adopted by a gateway** (eight in the house, all in Shelly Cloud
+    only - the session "shelly manager"), and SANCTUM MOTION had no action towards the service: its
+    code is tested, not seen on a device yet.

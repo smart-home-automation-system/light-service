@@ -12,6 +12,12 @@ import cloud.cholewa.light.model.LightReading;
 import cloud.cholewa.light.model.LightStatus;
 import cloud.cholewa.light.model.LightView;
 import cloud.cholewa.light.model.RoomLights;
+import cloud.cholewa.light.model.RoomOccupancy;
+import cloud.cholewa.light.occupancy.OccupancyRegistry;
+import cloud.cholewa.light.occupancy.OccupancySensor;
+import cloud.cholewa.light.occupancy.OccupancyTracker;
+import cloud.cholewa.light.occupancy.SensorBinding;
+import cloud.cholewa.light.occupancy.SensorKind;
 import cloud.cholewa.light.registry.LightRegistry;
 import cloud.cholewa.light.state.Gen1Action;
 import cloud.cholewa.light.state.LightStateTracker;
@@ -27,6 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -45,7 +52,9 @@ class LightQueryServiceTest {
 
     private final LightRegistry registry = mock(LightRegistry.class);
     private final LightStateTracker tracker = mock(LightStateTracker.class);
-    private final LightQueryService service = new LightQueryService(registry, tracker);
+    private final OccupancyRegistry occupancyRegistry = mock(OccupancyRegistry.class);
+    private final OccupancyTracker occupancyTracker = mock(OccupancyTracker.class);
+    private final LightQueryService service = new LightQueryService(registry, tracker, occupancyRegistry, occupancyTracker);
 
     @BeforeEach
     void setUp() {
@@ -129,6 +138,65 @@ class LightQueryServiceTest {
         when(tracker.observe(any(), any())).thenReturn(Mono.error(new IllegalStateException("database away")));
 
         service.gen1Action(90, Gen1Action.OFF).as(StepVerifier::create).verifyComplete();
+    }
+
+    //HAS-260: the room read carries the occupancy of the room
+    @Test
+    void should_answer_a_room_with_its_occupancy() {
+        final RoomOccupancy occupancy = new RoomOccupancy("kitchen", true, EVENING, null, null, null, List.of());
+        when(registry.inRoom(RoomName.KITCHEN)).thenReturn(Mono.just(List.of(CEILING)));
+        when(occupancyTracker.room(RoomName.KITCHEN)).thenReturn(occupancy);
+
+        service.inRoom(RoomName.KITCHEN).as(StepVerifier::create)
+            .assertNext(room -> assertThat(room.occupancy()).isSameAs(occupancy))
+            .verifyComplete();
+    }
+
+    @Test
+    void should_answer_the_occupancy_of_a_room_without_lights() {
+        final RoomOccupancy occupancy = new RoomOccupancy("loft", null, null, null, null, null, List.of());
+        when(occupancyTracker.room(RoomName.LOFT)).thenReturn(occupancy);
+
+        service.occupancy(RoomName.LOFT).as(StepVerifier::create).expectNext(occupancy).verifyComplete();
+    }
+
+    //the motion_on / motion_off of a Shelly Motion, with the lux its URL carries
+    @Test
+    void should_take_a_gen1_motion_with_its_lux() {
+        final OccupancySensor sanctum = gen1Motion(94);
+        when(occupancyRegistry.sensors()).thenReturn(List.of(sanctum));
+
+        service.gen1Motion(94, true, 12.0).as(StepVerifier::create).verifyComplete();
+
+        verify(occupancyTracker).motion(sanctum, true);
+        verify(occupancyTracker).illumination(sanctum, null, 12.0);
+    }
+
+    @Test
+    void should_take_the_end_of_a_gen1_motion_without_a_lux() {
+        final OccupancySensor sanctum = gen1Motion(94);
+        when(occupancyRegistry.sensors()).thenReturn(List.of(sanctum));
+
+        service.gen1Motion(94, false, null).as(StepVerifier::create).verifyComplete();
+
+        verify(occupancyTracker).motion(sanctum, false);
+        verify(occupancyTracker, never()).illumination(any(), any(), any());
+    }
+
+    //a device configured with the wrong id, or one that is no Shelly Motion of the registry
+    @Test
+    void should_refuse_a_gen1_motion_of_a_device_that_is_no_gen1_motion_sensor() {
+        when(occupancyRegistry.sensors()).thenReturn(List.of(new OccupancySensor(51, "Stairs motion sensor", RoomName.STAIRS,
+            SensorKind.MOTION, new SensorBinding.EatonMotion(EatonGatewayType.LIGHTS, 92))));
+
+        service.gen1Motion(51, true, null).as(StepVerifier::create)
+            .verifyErrorSatisfies(error -> assertThat(error).isInstanceOf(LightException.class)
+                .extracting(e -> ((LightException) e).getError()).isEqualTo(LightError.NOT_FOUND_LIGHT));
+        verifyNoInteractions(occupancyTracker);
+    }
+
+    private static OccupancySensor gen1Motion(final long id) {
+        return new OccupancySensor(id, "Motion", RoomName.SANCTUM, SensorKind.MOTION, new SensorBinding.Gen1Motion("10.0.0.9"));
     }
 
     private static Light light(final long id, final RoomName room, final LightKind kind, final LightBinding binding) {

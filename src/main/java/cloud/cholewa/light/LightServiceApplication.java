@@ -2,6 +2,7 @@ package cloud.cholewa.light;
 
 import cloud.cholewa.light.config.InternalServiceProperties;
 import cloud.cholewa.light.config.NotificationConnectionProperties;
+import cloud.cholewa.light.config.OccupancyProperties;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -9,7 +10,8 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 @SpringBootApplication
 @EnableConfigurationProperties({
     NotificationConnectionProperties.class,
-    InternalServiceProperties.class
+    InternalServiceProperties.class,
+    OccupancyProperties.class
 })
 public class LightServiceApplication {
 

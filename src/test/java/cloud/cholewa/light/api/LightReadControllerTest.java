@@ -5,6 +5,7 @@ import cloud.cholewa.light.config.ExceptionHandlerConfig;
 import cloud.cholewa.light.error.LightException;
 import cloud.cholewa.light.model.LightView;
 import cloud.cholewa.light.model.RoomLights;
+import cloud.cholewa.light.model.RoomOccupancy;
 import cloud.cholewa.light.service.LightQueryService;
 import cloud.cholewa.light.state.Gen1Action;
 import org.junit.jupiter.api.Test;
@@ -124,10 +125,59 @@ class LightReadControllerTest {
             .expectStatus().isNotFound();
     }
 
+    //HAS-260: the occupancy of a room, alone and inside the room read; what is not known is left out
+    @Test
+    void should_answer_the_occupancy_of_a_room() {
+        when(lightQueryService.occupancy(RoomName.OFFICE)).thenReturn(Mono.just(new RoomOccupancy("office", true, EVENING, null,
+            "dark", null, List.of(new RoomOccupancy.SensorView(91, "Presence", "presence sensor", EVENING, true)))));
+
+        webTestClient.get().uri("/rooms/office/occupancy")
+            .exchange()
+            .expectStatus().isOk()
+            .expectBody()
+            .jsonPath("$.room").isEqualTo("office")
+            .jsonPath("$.occupied").isEqualTo(true)
+            .jsonPath("$.since").isEqualTo("2026-10-19T19:00:05")
+            .jsonPath("$.lastMotionAt").doesNotExist()
+            .jsonPath("$.illumination").isEqualTo("dark")
+            .jsonPath("$.lux").doesNotExist()
+            .jsonPath("$.sensors[0].kind").isEqualTo("presence sensor")
+            .jsonPath("$.sensors[0].reachable").isEqualTo(true);
+    }
+
+    @Test
+    void should_answer_a_room_with_its_occupancy_inside() {
+        when(lightQueryService.inRoom(RoomName.STAIRS)).thenReturn(Mono.just(RoomLights.of("stairs", List.of(STAIRS),
+            new RoomOccupancy("stairs", null, null, EVENING, null, null, List.of()))));
+
+        webTestClient.get().uri("/rooms/stairs")
+            .exchange()
+            .expectStatus().isOk()
+            .expectBody()
+            .jsonPath("$.occupancy.room").isEqualTo("stairs")
+            .jsonPath("$.occupancy.occupied").doesNotExist()
+            .jsonPath("$.occupancy.lastMotionAt").isEqualTo("2026-10-19T19:00:05");
+    }
+
+    //the motion_on / motion_off actions of a Shelly Motion
+    @Test
+    void should_take_a_gen1_motion_with_its_lux() {
+        when(lightQueryService.gen1Motion(97, true, 12.5)).thenReturn(Mono.empty());
+        when(lightQueryService.gen1Motion(97, false, null)).thenReturn(Mono.empty());
+
+        webTestClient.get().uri("/events/gen1?device=97&event=motion&lux=12.5").exchange().expectStatus().isNoContent();
+        webTestClient.get().uri("/events/gen1?device=97&event=motion_end").exchange().expectStatus().isNoContent();
+
+        verify(lightQueryService).gen1Motion(97, true, 12.5);
+        verify(lightQueryService).gen1Motion(97, false, null);
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {
         "/events/gen1?device=90&event=ON", "/events/gen1?device=90&event=toggle", "/events/gen1?device=90",
-        "/events/gen1?event=on", "/events/gen1?device=abc&event=on", "/rooms/attic", "/rooms/Hall up"
+        "/events/gen1?event=on", "/events/gen1?device=abc&event=on", "/rooms/attic", "/rooms/Hall up",
+        "/rooms/attic/occupancy", "/events/gen1?device=90&event=on&lux=10", "/events/gen1?device=97&event=motion&lux=-1",
+        "/events/gen1?device=97&event=motion&lux=dark"
     })
     void should_refuse_what_is_not_a_read_or_an_action(final String uri) {
         webTestClient.get().uri(uri)
