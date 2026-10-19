@@ -31,11 +31,24 @@ The lights of the house: switching them, knowing whether they are really on and 
 by the rules of each room - motion, presence and an empty house (epic HAS-256). The lights are
 Eaton devices, switched through `amx-service`, and Shelly devices.
 
-This release is the **skeleton** (HAS-257): the service starts, takes the events of every
-device off its queue and has its clients ready, but it does nothing with them yet and has no
-endpoints.
+Since HAS-258 it knows the lights from the device registry and switches them on command; the
+real state of a light (HAS-259) and the rules of the rooms come next.
 
 Everything is non-blocking (Spring WebFlux / Reactor):
+
+- **The lights** are the switched-on lights of the device registry of `database-service`
+  (`kind=light`), read at the start and every 5 minutes. A failed read keeps the last list; until
+  one read has succeeded a command reads the registry itself. A light without `lightKind`, or one
+  the service cannot reach (no address, generation or point), is skipped with a WARN.
+- **What a light can do** follows its `lightKind`: a `relay` switches, a `dimmer` also takes a
+  brightness, an `rgbw` light also takes a color. The commands go to the device once and are never
+  repeated:
+
+  | | relay | dimmer | rgbw |
+  |---|---|---|---|
+  | Shelly Gen1 | `/relay/<channel>` | `/light/<channel>` | `/color/<channel>`, the brightness as the gain |
+  | Shelly Gen2+ | `Switch.Set` | `Light.Set` | `RGB.Set` or `RGBW.Set` - the profile of the device, read once from `Shelly.GetStatus` |
+  | Eaton | `amx-service` `/home/amx/eaton/lights/{point}?turn=` | and `/level?value=` | - |
 
 - **Device events** arrive from RabbitMQ, virtual host `/device` (user `device`), queue
   `device.prod.light` (`device.dev.light` in the `local` profile). The queue is bound to
@@ -75,8 +88,28 @@ Everything is non-blocking (Spring WebFlux / Reactor):
 
 # API
 
-Base path `/home/light` (`spring.webflux.base-path`). No endpoints yet; the service is not
-routed by `api-gateway-service` (HAS-265).
+Base path `/home/light` (`spring.webflux.base-path`). Not routed by `api-gateway-service` yet
+(HAS-265). Every command answers **202** once the device (or `amx-service`) took it - never once
+the light is on. `source` is `dashboard` (the default), `rule` or `empty-house`; every value is
+taken exactly as written.
+
+| Method | Path | Parameters / body | Answer |
+|---|---|---|---|
+| `POST` | `/{id}` | `turn=on\|off`, `source` | 202 |
+| `POST` | `/{id}/brightness` | `value=1..100` (switches the light on), `source` | 202 |
+| `POST` | `/{id}/color` | `{"rgb": [r, g, b], "white": w, "brightness": b}` - rgb and white 0..255, brightness 1..100, each part optional (the device keeps what is left out), at least one; switches the light on. `source` | 202 |
+| `POST` | `/rooms/{room}` | `turn=on\|off`, `source`; the room as the registry writes it (`living room`) | 202 with `{room, turn, switched: [{id, name}], failed: [{id, name, code}]}` |
+
+A room is switched one light after the other; one that fails is named in `failed`, the rest still
+switch. It fails as a whole only when no light took the command.
+
+| Status | `code` | When |
+|---|---|---|
+| 400 | - | a parameter or a body that is not a command |
+| 400 | `UNSUPPORTED_CAPABILITY` | a brightness for a relay, a color for a light without one, white for a Gen2 device in the profile rgb |
+| 404 | `NOT_FOUND_LIGHT` | no switched-on light with that id, no light in the room |
+| 502 | `DEVICE_FAILED` | the device or `amx-service` did not take the command - it may have been carried out; the answer carries the code alone, the device message is in the log |
+| 502 | `REGISTRY_UNAVAILABLE` | the device registry could not be read since the start |
 
 # Database
 
