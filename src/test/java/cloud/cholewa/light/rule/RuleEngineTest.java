@@ -3,6 +3,7 @@ package cloud.cholewa.light.rule;
 import cloud.cholewa.home.model.RoomName;
 import cloud.cholewa.light.database.model.RuleRunEntity;
 import cloud.cholewa.light.database.repository.RuleRunRepository;
+import cloud.cholewa.light.emptyhouse.HouseState;
 import cloud.cholewa.light.error.LightException;
 import cloud.cholewa.light.model.Color;
 import cloud.cholewa.light.model.CommandSource;
@@ -82,8 +83,9 @@ class RuleEngineTest {
     private final OccupancyTracker occupancyTracker = mock(OccupancyTracker.class);
     private final LightCommandService lightCommandService = mock(LightCommandService.class);
     private final RuleRunRepository ruleRunRepository = mock(RuleRunRepository.class);
+    private final HouseState houseState = mock(HouseState.class);
     private final RuleEngine engine = new RuleEngine(roomRuleService, ruleBook, lightRegistry, lightStateTracker,
-        occupancyTracker, lightCommandService, ruleRunRepository, clock);
+        occupancyTracker, lightCommandService, ruleRunRepository, houseState, clock);
 
     @BeforeEach
     void setUp() {
@@ -173,6 +175,21 @@ class RuleEngineTest {
         engine.motion(RoomName.HALL_UP).as(StepVerifier::create).verifyComplete();
 
         verify(lightCommandService).brightness(HALL_LEFT.id(), 80, CommandSource.RULE);
+    }
+
+    //nobody at home (HAS-263): the rules would switch the presence simulation off - the rules are still read
+    @Test
+    void should_pause_every_rule_while_the_house_is_empty() {
+        when(houseState.active(any())).thenReturn(true);
+        when(lightStateTracker.status(BEDROOM_CEILING.id())).thenReturn(Mono.just(on("external", EVENING.minusHours(2))));
+        ruleBook.replace(Map.of(RoomName.HALL_UP, hallRule()));
+
+        engine.tick().as(StepVerifier::create).verifyComplete();
+        engine.motion(RoomName.HALL_UP).as(StepVerifier::create).verifyComplete();
+
+        assertThat(ruleBook.rule(RoomName.BEDROOM)).isEqualTo(bedroomRule());
+        verify(lightCommandService, never()).turn(anyLong(), any(), any());
+        verify(lightCommandService, never()).brightness(anyLong(), anyInt(), any());
     }
 
     @Test

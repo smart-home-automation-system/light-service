@@ -10,7 +10,8 @@ sensors whether a room is occupied, when it last saw motion and how light it is 
 /home/light/rooms/{room}/occupancy`, and the same object inside the room read); since HAS-261 it stores
 the rules of each room (`/home/light/rules`, `/rooms/{room}/rules`); since HAS-262 the engine runs them -
 auto-off, motion-on, motion-off and the manual hold - and logs every command it sends
-(`GET /home/light/rooms/{room}/rules/runs`).
+(`GET /home/light/rooms/{room}/rules/runs`); since HAS-263 it acts on an empty house - the lights left
+on by day switched off, a presence simulation by night (`/home/light/empty-house`, its plan in the database).
 
 Part of the smart-home-automation-system organization — org-wide conventions, the
 repository map and working rules come from the workspace-level context
@@ -31,8 +32,8 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
 - Database: own database `home-automation-light`, pool `database.pool.max-size: 2` (heating 2 /
   database 4 / water 2 / presence 2 / blinds 2 / weather 2 / light 2 = 16 of 22), pinned by
   `LightServiceApplicationTest`. Tables: `light_state` (`V1`, HAS-259), `light_room_rule` and
-  `light_motion_period` (`V2`, HAS-261), `light_rule_run` (`V3`, HAS-262 - its Jira text says `V4`) - the Jira
-  texts count one higher. **The next migration is `V4`**.
+  `light_motion_period` (`V2`, HAS-261), `light_rule_run` (`V3`, HAS-262 - its Jira text says `V4`),
+  `light_simulation_phase` and `light_simulation_spot` (`V4`, HAS-263). **The next migration is `V5`**.
 - Integrates with hardware: the Eaton lights through `amx-service`, the Shelly lights over HTTP
   (commands) and MQTT (status topics) - from HAS-258 on.
 
@@ -122,7 +123,8 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
 - **The test document points everything outward at port 1** (broker, database, the three
   services; `ApplicationYamlTest`): a context test must never switch a real light. A new
   outward address gets its line there.
-- **What has no default in `home`** - the two broker passwords - is listed in
+- **What has no default in `home`** - the two broker passwords and the place of the house
+  (`location-latitude` / `-longitude`, from the manifest, HAS-263) - is listed in
   `cholewa.required-properties`, which refuses the start before the first bean;
   `RequiredPropertiesTest` ties the list to the placeholders.
 - **The notification connection is not a bean** (`NotificationRabbitConfig`): a
@@ -226,3 +228,34 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
     not, at most 7 days, any room - the runs of a removed rule stay). No retention yet.
   - **The once-guard and the 2-minute command window of `LightStateTracker` meet on a Gen1 light without
     actions**: a change seen more than 2 min after the rule's command is `external` and starts a hold.
+- **The empty house** (HAS-263), package `emptyhouse`:
+  - **`HouseState`** - whether anybody is at home, from `GET /home/presence/residents/presence` every minute
+    (`EmptyHouseEngine.tick`, initial PT1M): empty when every active member is away by a reading newer than
+    5 min; a member never observed, no members, a stale reading or a failed call is **unknown, never empty**.
+    Only somebody at home ends an empty house - an unknown spell suspends acting but keeps `emptySince`, so it
+    neither restarts the delay nor announces twice. Held apart from the engine so that `RuleEngine` reads it:
+    **the rules of the rooms pause while the house is empty** (`active` - after `light.empty-house.after`,
+    PT10M, 1 min - 2 h, minutes), or they would switch the simulation off.
+  - **`EmptyHouseEvaluator`** (pure): what should be lit - nothing by day, the simulation of the minute by night -
+    against the state; a light known on that should not be goes off, one that should be lit and is not known on
+    goes on. **No manual hold** (nobody is at home), the once-guard of the rules. Source `empty-house` (starts no
+    hold), reason `empty-house` by day or `presence-simulation` in `light_rule_run`. One info notification per
+    empty house for the lights switched off by day (their rooms), one when the simulation starts.
+    `light.empty-house.enabled: false` keeps it from acting; it is still watched and answered.
+  - **`SimulationPlanner`** (pure, `SimulationPlannerTest` over 60 nights): the night of a date is its civil dusk
+    to the next sunrise (`SunCalendar` - **a copy of the one of blinds-service**, with the civil dusk; the second
+    copy); a phase runs only inside it, its `from` / `to` (after noon the evening, before noon the morning after)
+    each moved by up to `jitterMinutes`. **Seeded by the date**: the same night always comes out the same (a
+    restart picks up), another night differs. Continuous phases keep somebody in a `stay` spot (sometimes two,
+    `maxSpotsAtOnce`), a `path` lit for the two minutes around every other move, a `closing` spot 5-15 min after
+    the end; a visits phase is `visitsMin`-`visitsMax` short stays with their path. The engine asks it every
+    minute what is lit now - a desired state, not a list of commands.
+  - **The plan** (`SimulationPlanService`, `PlanRules`): `GET` / `PUT /empty-house/plan`, whole, every field
+    required, `INVALID_PLAN` with the reason (a new code of `LightError` - the dashboard needs a text); every light
+    of a spot must be a registry light of the room of the spot. A phase row has its name as the key, so it is
+    inserted by `R2dbcEntityTemplate.insert`, never `save()`. Read by the engine only by night while the house is
+    empty. No plan: an empty house only gets its lights switched off. `GET /empty-house` answers the house,
+    `emptySince`, `actingFrom`, `active`, the night, and by night a preview of what is lit and the next change.
+  - **The lights of the house were completed for it** (owner, 2026-10-19; registry 105-128,
+    `deployment-tools/scripts/shelly/devices.md`): every Shelly light, sanctum and sauna included; 105, 106 and
+    116 checked by switching, the rest to check by day.
