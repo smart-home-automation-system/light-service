@@ -34,7 +34,8 @@ Eaton devices, switched through `amx-service`, and Shelly devices.
 Since HAS-258 it knows the lights from the device registry and switches them on command; since
 HAS-259 it knows whether each light is really on, whoever switched it; since HAS-260 it knows from
 the presence and motion sensors whether a room is occupied, when it last saw motion and how light it
-is. The rules of the rooms come next.
+is; since HAS-261 it stores the rules of each room, which the administrator writes and a resident
+switches off. The engine that acts on them comes next.
 
 Everything is non-blocking (Spring WebFlux / Reactor):
 
@@ -93,13 +94,16 @@ Everything is non-blocking (Spring WebFlux / Reactor):
 - **Clients** of `database-service` (the device registry), `amx-service` (the Eaton lights)
   and `presence-service` (who is at home), each a `WebClient` over k8s DNS with its own
   connect and response timeouts and its own connection pool (`internal.service.*`).
+- **The rules of a room** (HAS-261) are data of the service's own database, written whole by the
+  administrator and switched off by a resident (below); the engine that acts on them is HAS-262.
 - **The rules run in the memory of one instance**: the deployment is `Recreate` and never
   scaled; scheduling is off under the `test` profile.
 
 # Run locally
 
 - Build: `mvn verify` (JDK 21) **needs a running Docker**: `LightStateRepositoryTest` runs the
-  PostgreSQL-only SQL of the state on a Testcontainers PostgreSQL.
+  PostgreSQL-only SQL of the state and the rules on a Testcontainers PostgreSQL
+  (`LightStateRepositoryTest`, `RoomRuleServiceTest`).
 - Ports: local profile `6012` (management `8012`); in the deployed `home` profile the service
   listens on `6200` and Actuator on `8200` like every service in the cluster. The probes hit
   `/actuator/health/{readiness,liveness}` and Prometheus scrapes `/actuator/prometheus`.
@@ -133,6 +137,11 @@ taken exactly as written.
 | `GET` | `/rooms/{room}` | - | 200, `{room, anyOn, lights: [...], occupancy: {...}}` |
 | `GET` | `/rooms/{room}/occupancy` | - | 200, the occupancy of the room (below) - also of a room without lights or sensors |
 | `GET` | `/{id}` | - | 200, one light |
+| `GET` | `/rules` | - | 200, every room with a rule: `[{room, ...}]` |
+| `GET` | `/rooms/{room}/rules` | - | 200, the rule of the room (below); 404 `NOT_FOUND_RULE` without one |
+| `PUT` | `/rooms/{room}/rules` | the rule, whole (below) | 200, the rule as stored - created or replaced; the switch of the resident is kept |
+| `DELETE` | `/rooms/{room}/rules` | - | 204 |
+| `PUT` | `/rooms/{room}/rules/resident-enabled` | `{"enabled": false}` - the switch of My room | 200, the rule as stored |
 | `GET` | `/events/gen1` | `device=<registry id>`, `event=on\|off` - called by a Gen1 light (`out_on_url` / `out_off_url`); or `event=motion\|motion_end` and an optional `lux=0..200000` - called by a Shelly Motion (`motion_on` / `motion_off`) | 204; a device that is not a Gen1 light / Gen1 motion sensor of the registry 404 |
 
 A light in a read: `id`, `name`, `room`, `vendor`, `kind` from the registry, and `on`,
@@ -155,7 +164,59 @@ switch. It fails as a whole only when no light took the command.
 | 400 | `UNSUPPORTED_CAPABILITY` | a brightness for a relay, a color for a light without one, white for a Gen2 device in the profile rgb |
 | 404 | `NOT_FOUND_LIGHT` | no switched-on light with that id, no light in the room |
 | 502 | `DEVICE_FAILED` | the device or `amx-service` did not take the command - it may have been carried out; the answer carries the code alone, the device message is in the log |
-| 502 | `REGISTRY_UNAVAILABLE` | the device registry could not be read since the start (a light, or a Gen1 motion sensor) |
+| 400 | `INVALID_RULE` | a rule the service will not store - the reason in `details` (below) |
+| 404 | `NOT_FOUND_RULE` | no rule for the room |
+| 502 | `REGISTRY_UNAVAILABLE` | the device registry could not be read since the start (a light, a Gen1 motion sensor, or the lights and sensors a rule is judged by) |
+
+# The rules of a room
+
+A room has no rule until the administrator writes one; `PUT` sends it whole - **nothing has a
+default**, a field left out is refused, never read as off:
+
+| Field | |
+|---|---|
+| `autoOffEnabled`, `autoOffDelayMinutes` | every light of the room off that many minutes after the room is empty - with a presence sensor after it says so, with motion sensors only after the last motion |
+| `motionOnEnabled`, `onlyBelowLux`, `motionOffAfterMinutes` | the lights on at a motion while the room is darker than `onlyBelowLux` (optional - left out, whatever the light), off again that many minutes after the last motion |
+| `periods: [{from, to, brightness, rgb, white}]` | the scheme of the motion per time of day: `HH:mm`, a `to` before `from` is the next day, the same time the whole day; `brightness` 1..100, `rgb` 3 × 0..255, `white` 0..255 - each optional, a light keeps what is left out. Outside every period a motion switches nothing on |
+| `manualHoldMinutes` | a light somebody else switched or changed is left alone that long |
+
+The answer adds `room`, `enabledByResident` (false stops both rules of the room - the switch of
+My room, which a write of the administrator keeps) and `updatedAt`, and leaves out a delay or a
+lux that was not given.
+
+`INVALID_RULE` names the first rule broken: a switch or `manualHoldMinutes` missing, the delay of
+an enabled rule missing, a delay outside 1..180 minutes, `onlyBelowLux` outside 1..100000, `periods`
+missing, more than 12 or overlapping, motion-on without a period, a value of a period out of range;
+and against the registry - a room without lights, **a room whose only sensors are Eaton PIRs** (the
+halls stay in NetLinx), auto-off without a presence or motion sensor, motion-on without a motion
+sensor, a brightness without a light that dims, a colour without an rgbw light.
+
+A bedroom that switches itself off 15 minutes after it is empty, a light switched by hand left for an
+hour:
+
+```json
+{
+  "autoOffEnabled": true, "autoOffDelayMinutes": 15,
+  "motionOnEnabled": false,
+  "periods": [],
+  "manualHoldMinutes": 60
+}
+```
+
+A hall lit by motion below 30 lx - bright in the evening, a dim warm light at night, nothing by day -
+off 3 minutes after the last motion (the colour needs an rgbw light in the hall):
+
+```json
+{
+  "autoOffEnabled": true, "autoOffDelayMinutes": 10,
+  "motionOnEnabled": true, "onlyBelowLux": 30, "motionOffAfterMinutes": 3,
+  "periods": [
+    { "from": "16:00", "to": "22:00", "brightness": 80 },
+    { "from": "22:00", "to": "06:00", "brightness": 10, "rgb": [255, 120, 0] }
+  ],
+  "manualHoldMinutes": 30
+}
+```
 
 # Database
 
@@ -164,3 +225,6 @@ switch. It fails as a whole only when no light took the command.
 - `light_state` (`V1`, HAS-259): one row per period of an unchanged state of a light - `device_id`
   (the registry id), `switched_on`, `brightness`, `rgb` (`r,g,b`), `white`, `source`,
   `started_at`, `last_checked_at`; the latest row of a light is its highest id.
+- `light_room_rule` and `light_motion_period` (`V2`, HAS-261): one row per room with a rule (the
+  room by the name of its `RoomName` constant - renaming one needs a migration of the rows) and its
+  periods, gone with it.

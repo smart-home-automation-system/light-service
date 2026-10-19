@@ -7,7 +7,8 @@ device registry and switches them on command through three drivers (`POST /home/
 since HAS-259 it tracks the real state of every light from what the devices report and serves it
 (`GET /home/light`, `/rooms/{room}`, `/{id}`); since HAS-260 it knows from the presence and motion
 sensors whether a room is occupied, when it last saw motion and how light it is (`GET
-/home/light/rooms/{room}/occupancy`, and the same object inside the room read).
+/home/light/rooms/{room}/occupancy`, and the same object inside the room read); since HAS-261 it stores
+the rules of each room (`/home/light/rules`, `/rooms/{room}/rules`), which the engine (HAS-262) will run.
 
 Part of the smart-home-automation-system organization — org-wide conventions, the
 repository map and working rules come from the workspace-level context
@@ -27,16 +28,17 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
   `ShellyRpcClient`; `ShellyHttpClientCustomizer` puts their calls into the log).
 - Database: own database `home-automation-light`, pool `database.pool.max-size: 2` (heating 2 /
   database 4 / water 2 / presence 2 / blinds 2 / weather 2 / light 2 = 16 of 22), pinned by
-  `LightServiceApplicationTest`. Tables: `light_state` (`V1`, HAS-259 - the Jira text counted one
-  higher). **The next migration is `V2`**.
+  `LightServiceApplicationTest`. Tables: `light_state` (`V1`, HAS-259), `light_room_rule` and
+  `light_motion_period` (`V2`, HAS-261) - the Jira texts count one higher. **The next migration is `V3`**
+  (HAS-262 says `V4`).
 - Integrates with hardware: the Eaton lights through `amx-service`, the Shelly lights over HTTP
   (commands) and MQTT (status topics) - from HAS-258 on.
 
 ## Build & run
 
 - Build + tests: `mvn verify` **needs a running Docker** since HAS-259: `LightStateRepositoryTest`
-  runs the `DISTINCT ON` and the `touchLatest` of the state on a Testcontainers PostgreSQL
-  (`@DataR2dbcTest`, migrations applied by hand). Without Docker it fails, it is not skipped.
+  runs the `DISTINCT ON` and the `touchLatest` of the state, `RoomRuleServiceTest` the upsert of the
+  rules, on a Testcontainers PostgreSQL (`@DataR2dbcTest`, migrations applied by hand). Without Docker it fails, it is not skipped.
 - Local run: `home,local` Spring profiles, port `6012` (Actuator `8012`); in-cluster port
   `6200`, Actuator `8200`. Locally the broker is `localhost`, the services are on 6005 / 6001 /
   6009, and the broker passwords default to a dummy. The overall health is `DOWN` without a
@@ -171,3 +173,21 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
     of the stairs (51). The circulation sensor of bathroom up (100) reports motion rarely by its
     settings (it drives the hot-water circulation in Shelly Cloud) - do not read its silence as an
     empty room.
+- **The rules of a room** (HAS-261), package `rule`, stored in `light_room_rule` (one row per room, the
+  key is the `RoomName` constant) and `light_motion_period`:
+  - **`RoomRuleRules` holds every rule**, pinned by `RoomRuleRulesTest`: `check()` the body alone,
+    `checkRoom()` against the lights (`LightRegistry`) and sensors (`OccupancyRegistry`, which must have
+    been read once - otherwise `REGISTRY_UNAVAILABLE`). Nothing has a default; the delay of an enabled
+    rule is required, every delay 1-180 min; periods are half-open, a `to` before `from` crosses
+    midnight, the same time is the whole day; a period's brightness / colour are optional (the light
+    keeps its own) but refused in a room that cannot take them. **A room whose only sensors are Eaton
+    PIRs gets no rule** (the halls stay in NetLinx, owner via HAS-262); motion-on needs a motion sensor,
+    a presence sensor alone is not one. `INVALID_RULE` answers the first broken rule in words.
+  - **A rule is judged at write time only**: a light or sensor removed from the registry later leaves
+    a stored rule that no longer fits - the engine treats it as nothing to do, never a failed pass.
+  - **The resident's switch survives the administrator**: `PUT /rules` is an upsert
+    (`RoomRuleRepository.upsert`, `ON CONFLICT`) that never sets `enabled_by_resident` - a new rule
+    starts `true`. Never `save()` a `RoomRuleEntity`: with its key set it is taken for an update.
+  - **Only the writes are the transaction** (`write()`): the registry may be read over HTTP before,
+    and a connection held meanwhile would be half of the pool.
+  - `"r,g,b"` of a colour is `RgbColumn`, shared with the state.
