@@ -1,5 +1,6 @@
 package cloud.cholewa.light.driver;
 
+import cloud.cholewa.home.model.EatonGatewayType;
 import cloud.cholewa.home.model.LightKind;
 import cloud.cholewa.home.model.RoomName;
 import cloud.cholewa.home.model.SmartVendor;
@@ -29,7 +30,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class EatonDriverTest {
 
     private static final Light SOFA = new Light(25, "Living room sofa", RoomName.LIVING_ROOM, SmartVendor.EATON,
-        new LightBinding.Eaton(24), LightKind.DIMMER);
+        new LightBinding.Eaton(24, EatonGatewayType.LIGHTS), LightKind.DIMMER);
 
     private MockWebServer server;
     private EatonDriver driver;
@@ -69,6 +70,18 @@ class EatonDriverTest {
         assertThat(request.getMethod()).isEqualTo("POST");
         assertThat(request.getUrl().encodedPath()).isEqualTo("/home/amx/eaton/lights/24/level");
         assertThat(request.getUrl().queryParameter("value")).isEqualTo("40");
+    }
+
+    //HAS-259: the answer arrives as a status event, the call only says the request went out
+    @Test
+    void should_ask_the_actuator_for_its_status_through_amx_service() throws InterruptedException {
+        server.enqueue(accepted());
+
+        driver.requestStatus(SOFA).as(StepVerifier::create).verifyComplete();
+
+        final RecordedRequest request = server.takeRequest();
+        assertThat(request.getMethod()).isEqualTo("POST");
+        assertThat(request.getUrl().encodedPath()).isEqualTo("/home/amx/eaton/lights/24/status");
     }
 
     //the frame may have gone out or not - either way the command is failed, and the codes go to the log

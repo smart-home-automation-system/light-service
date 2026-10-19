@@ -3,7 +3,9 @@
 The lights of the house (epic HAS-256): switching the Eaton and Shelly lights, knowing whether
 they are really on and switching them by the rules of each room - motion, presence and an empty
 house. Since HAS-257 it consumes the device events; since HAS-258 it knows the lights from the
-device registry and switches them on command through three drivers (`POST /home/light/...`).
+device registry and switches them on command through three drivers (`POST /home/light/...`);
+since HAS-259 it tracks the real state of every light from what the devices report and serves it
+(`GET /home/light`, `/rooms/{room}`, `/{id}`).
 
 Part of the smart-home-automation-system organization — org-wide conventions, the
 repository map and working rules come from the workspace-level context
@@ -23,15 +25,16 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
   `ShellyRpcClient`; `ShellyHttpClientCustomizer` puts their calls into the log).
 - Database: own database `home-automation-light`, pool `database.pool.max-size: 2` (heating 2 /
   database 4 / water 2 / presence 2 / blinds 2 / weather 2 / light 2 = 16 of 22), pinned by
-  `LightServiceApplicationTest`. No schema yet - **the first migration is `V1`**.
+  `LightServiceApplicationTest`. Tables: `light_state` (`V1`, HAS-259 - the Jira text counted one
+  higher). **The next migration is `V2`**.
 - Integrates with hardware: the Eaton lights through `amx-service`, the Shelly lights over HTTP
   (commands) and MQTT (status topics) - from HAS-258 on.
 
 ## Build & run
 
-- Build + tests: `mvn verify`; no test needs Docker yet. The Testcontainers dependencies are
-  there for the first repository test of PostgreSQL-only SQL - from then on it needs a running
-  Docker and fails without one.
+- Build + tests: `mvn verify` **needs a running Docker** since HAS-259: `LightStateRepositoryTest`
+  runs the `DISTINCT ON` and the `touchLatest` of the state on a Testcontainers PostgreSQL
+  (`@DataR2dbcTest`, migrations applied by hand). Without Docker it fails, it is not skipped.
 - Local run: `home,local` Spring profiles, port `6012` (Actuator `8012`); in-cluster port
   `6200`, Actuator `8200`. Locally the broker is `localhost`, the services are on 6005 / 6001 /
   6009, and the broker passwords default to a dummy. The overall health is `DOWN` without a
@@ -77,6 +80,37 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
   the empty house will call the service in-process.
 - **The codes of `LightError` are wire contract** (`LightErrorTest`); a new or renamed code
   needs a text in the dashboard.
+- **The state (HAS-259) is merged in `LightStateTracker`**, in memory; `decide()` is pure and holds
+  every rule, pinned by `LightStateTrackerTest`:
+  - a row of `light_state` only when a light is switched or a known brightness / color changes
+    (off too: the level it comes back at); a confirming reading touches the latest row (the
+    highest id) and fills in what it adds - the presence-service shape, as blinds `blinds_state`;
+  - what a report does not say is kept: an Eaton dimmer that reports `0` keeps its level, a Gen1
+    action its brightness;
+  - a change within `COMMAND_WINDOW` (2 min - two Gen1 polls lie more than 60 s apart) of
+    `commanded()` takes the command's source; the command is used up by a change, never by a
+    confirmation; otherwise the word of the Shelly device, or `external` (cut to 50);
+  - the writes of one light go one after the other (a `Sinks.Empty` per write, only the last
+    kept); the restore runs once (cached), before the first reading; times cut to microseconds.
+- **Which channel says what** (`LightEventRouter`, `LightStatePoll`):
+  - Gen2+: MQTT `status.<component>:<channel>` - the component of the kind (`switch` relay,
+    `light` dimmer, `rgb` / `rgbw` an rgbw light, which also teaches `Gen2Profiles` the profile)
+    and `online`, matched by `deviceId` case-insensitively. `GetStatus` every 5 min is a
+    reconciliation that **never changes reachability** (MQTT owns it).
+  - Gen1: `/status` every 60 s (`relays[]` for a relay, `lights[]` for the rest; the mode color by
+    its gain), a failure makes the light unreachable; `GET /events/gen1?device=<registry id>&event=on|off`
+    for the `out_on_url` / `out_off_url` actions - **not configured on any device yet**: they come
+    through the gateway, and `/light` is routed only with HAS-265 (owner, 2026-10-19). Unauthenticated
+    like everything behind the gateway - anyone on the LAN can write a Gen1 state; the rules must not
+    act on one the next poll has not confirmed.
+  - Eaton: the `status` event on `eaton.<gateway>.<point>` - the gateway of the light's own binding,
+    so a blind on the same point of the other gateway is never taken for it; a switch `0` / `1`, a
+    dimmer its level. **`EatonStatusRequests` asks every Eaton light once** after the start (a minute
+    in, a second apart, `POST /home/amx/eaton/lights/{point}/status` - amx-service ≥ 2.4.0); its
+    answer is a status event like any other. A light that cannot be asked is a WARN, never repeated.
+- **The reads leave out what is not known** (`LightView`, `NON_NULL`): nothing before the first
+  report, no brightness of a relay, no `reachable` after a restart; a room's `anyOn` is left out
+  while a light of it is unknown. The occupancy of a room joins with HAS-260.
 - **One instance, `Recreate`, never scaled**: the rules engine will live in its memory.
   `@EnableScheduling` is in `SchedulingConfig` under `@Profile("!test")`.
 - **The test document points everything outward at port 1** (broker, database, the three

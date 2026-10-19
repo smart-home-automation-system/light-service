@@ -31,8 +31,9 @@ The lights of the house: switching them, knowing whether they are really on and 
 by the rules of each room - motion, presence and an empty house (epic HAS-256). The lights are
 Eaton devices, switched through `amx-service`, and Shelly devices.
 
-Since HAS-258 it knows the lights from the device registry and switches them on command; the
-real state of a light (HAS-259) and the rules of the rooms come next.
+Since HAS-258 it knows the lights from the device registry and switches them on command; since
+HAS-259 it knows whether each light is really on, whoever switched it. The rules of the rooms come
+next.
 
 Everything is non-blocking (Spring WebFlux / Reactor):
 
@@ -49,6 +50,20 @@ Everything is non-blocking (Spring WebFlux / Reactor):
   | Shelly Gen1 | `/relay/<channel>` | `/light/<channel>` | `/color/<channel>`, the brightness as the gain |
   | Shelly Gen2+ | `Switch.Set` | `Light.Set` | `RGB.Set` or `RGBW.Set` - the profile of the device, read once from `Shelly.GetStatus` |
   | Eaton | `amx-service` `/home/amx/eaton/lights/{point}?turn=` | and `/level?value=` | - |
+
+- **The real state** of every light - a wall switch, the Shelly app, an AMX panel or this
+  service - comes only from what the devices report, never from a command:
+
+  | | how | reachability |
+  |---|---|---|
+  | Shelly Gen2+ | its MQTT status (`switch`, `light`, `rgb` / `rgbw`) at once; `GetStatus` every 5 minutes reconciles | its `online` topic |
+  | Shelly Gen1 | `/status` every 60 s; `GET /events/gen1` when the device calls it (its `out_on_url` / `out_off_url`) | a poll that fails |
+  | Eaton | the `status` event of `amx-service` (a switch on or off, a dimmer its level); every Eaton light is asked once after the start | - |
+
+  It is kept in memory and stored in `light_state` - a row when a light is switched or its
+  brightness or color changes, a confirmation moves `last_checked_at` - and read back at the
+  start. A change within 2 minutes of a command of this service is attributed to the command's
+  `source`, otherwise to what the Shelly device names (`button`, `switch`) or `external`.
 
 - **Device events** arrive from RabbitMQ, virtual host `/device` (user `device`), queue
   `device.prod.light` (`device.dev.light` in the `local` profile). The queue is bound to
@@ -67,9 +82,8 @@ Everything is non-blocking (Spring WebFlux / Reactor):
 
 # Run locally
 
-- Build: `mvn verify` (JDK 21). No test needs Docker yet; the Testcontainers dependencies are
-  there for the first repository test of PostgreSQL-only SQL, and from then on `mvn verify`
-  needs a running Docker.
+- Build: `mvn verify` (JDK 21) **needs a running Docker**: `LightStateRepositoryTest` runs the
+  PostgreSQL-only SQL of the state on a Testcontainers PostgreSQL.
 - Ports: local profile `6012` (management `8012`); in the deployed `home` profile the service
   listens on `6200` and Actuator on `8200` like every service in the cluster. The probes hit
   `/actuator/health/{readiness,liveness}` and Prometheus scrapes `/actuator/prometheus`.
@@ -99,6 +113,16 @@ taken exactly as written.
 | `POST` | `/{id}/brightness` | `value=1..100` (switches the light on), `source` | 202 |
 | `POST` | `/{id}/color` | `{"rgb": [r, g, b], "white": w, "brightness": b}` - rgb and white 0..255, brightness 1..100, each part optional (the device keeps what is left out), at least one; switches the light on. `source` | 202 |
 | `POST` | `/rooms/{room}` | `turn=on\|off`, `source`; the room as the registry writes it (`living room`) | 202 with `{room, turn, switched: [{id, name}], failed: [{id, name, code}]}` |
+| `GET` | the base path itself | - | 200, every light by room: `[{room, anyOn, lights: [...]}]` |
+| `GET` | `/rooms/{room}` | - | 200, `{room, anyOn, lights: [...]}` |
+| `GET` | `/{id}` | - | 200, one light |
+| `GET` | `/events/gen1` | `device=<registry id>`, `event=on\|off` - called by a Gen1 device (`out_on_url` / `out_off_url`) | 204; a device that is not a Gen1 light of the registry 404 |
+
+A light in a read: `id`, `name`, `room`, `vendor`, `kind` from the registry, and `on`,
+`brightness` (a dimmer or an rgbw light; off too - the level it comes back at), `color`
+(`{rgb, white}`, an rgbw light), `changedAt`, `source`, `reachable` from the devices. **A field the
+service does not know is left out**, never answered as off or zero. `anyOn` of a room is `true`
+when a light is on, `false` when every light is known to be off, and left out otherwise.
 
 A room is switched one light after the other; one that fails is named in `failed`, the rest still
 switch. It fails as a whole only when no light took the command.
@@ -115,4 +139,6 @@ switch. It fails as a whole only when no light took the command.
 
 - **Own database** `home-automation-light` on the managed PostgreSQL, reactive access via
   `r2dbc-postgresql`, migrations by Flyway from `src/main/resources/db/migration`.
-- **No schema yet**: the first migration comes with the first table.
+- `light_state` (`V1`, HAS-259): one row per period of an unchanged state of a light - `device_id`
+  (the registry id), `switched_on`, `brightness`, `rgb` (`r,g,b`), `white`, `source`,
+  `started_at`, `last_checked_at`; the latest row of a light is its highest id.

@@ -22,14 +22,14 @@ class LightMapperTest {
     void should_map_an_eaton_light_by_its_point() {
         assertThat(LightMapper.toLight(eaton(LightKind.DIMMER).eaton(new EatonBinding().gateway(EatonGatewayType.LIGHTS).point(24))))
             .contains(new Light(25, "Living room sofa", RoomName.LIVING_ROOM, SmartVendor.EATON,
-                new LightBinding.Eaton(24), LightKind.DIMMER));
+                new LightBinding.Eaton(24, EatonGatewayType.LIGHTS), LightKind.DIMMER));
     }
 
     @Test
     void should_map_a_shelly_by_its_generation() {
         assertThat(LightMapper.toLight(shelly(2, 1, LightKind.RGBW)))
             .map(Light::binding)
-            .contains(new LightBinding.ShellyGen2("10.0.0.34", 1));
+            .contains(new LightBinding.ShellyGen2("10.0.0.34", 1, "shellyplusrgbwpm-30c922571bdc"));
         assertThat(LightMapper.toLight(shelly(1, 0, LightKind.DIMMER)))
             .map(Light::binding)
             .contains(new LightBinding.ShellyGen1("10.0.0.34", 0));
@@ -40,7 +40,7 @@ class LightMapperTest {
     void should_take_channel_0_when_the_registry_leaves_it_out() {
         assertThat(LightMapper.toLight(shelly(2, null, LightKind.RELAY)))
             .map(Light::binding)
-            .contains(new LightBinding.ShellyGen2("10.0.0.34", 0));
+            .contains(new LightBinding.ShellyGen2("10.0.0.34", 0, "shellyplusrgbwpm-30c922571bdc"));
     }
 
     //what a light can do would be a guess - a brightness sent to a relay, a relay command to a dimmer
@@ -104,7 +104,8 @@ class LightMapperTest {
             .kind(DeviceKind.LIGHT)
             .enabled(true)
             .vendor(SmartVendor.SHELLY)
-            .shelly(new ShellyBinding().address("10.0.0.34").generation(generation).channel(channel))
+            .shelly(new ShellyBinding().address("10.0.0.34").generation(generation).channel(channel)
+                .deviceId("shellyplusrgbwpm-30c922571bdc"))
             .lightKind(kind)
             .build();
     }

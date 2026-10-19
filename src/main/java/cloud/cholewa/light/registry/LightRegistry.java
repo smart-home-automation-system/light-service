@@ -49,6 +49,18 @@ public class LightRegistry {
             });
     }
 
+    //The list as last read, empty until the first read succeeded - never a read of its own. For the
+    //device events and the polls: a lookup per event would read the registry 130 times a minute
+    //while database-service is away
+    public List<Light> current() {
+        final List<Light> list = lights.get();
+        return list == null ? List.of() : list;
+    }
+
+    public Mono<List<Light>> all() {
+        return known();
+    }
+
     public Mono<Light> find(final long id) {
         return known()
             .flatMap(list -> Mono.justOrEmpty(list.stream().filter(light -> light.id() == id).findFirst()))
