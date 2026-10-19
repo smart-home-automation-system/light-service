@@ -2,11 +2,13 @@ package cloud.cholewa.light.occupancy;
 
 import cloud.cholewa.home.model.EatonGatewayType;
 import cloud.cholewa.home.model.RoomName;
+import cloud.cholewa.light.rule.RuleEngine;
 import cloud.cholewa.shelly.codec.ShellyMqttDecoder;
 import cloud.cholewa.shelly.model.BthomeSensorStatus;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -40,13 +42,15 @@ class OccupancyEventRouterTest {
     private final OccupancyTracker tracker = mock(OccupancyTracker.class);
     private final OccupancyReads reads = mock(OccupancyReads.class);
     private final JsonMapper jsonMapper = JsonMapper.builder().build();
+    private final RuleEngine ruleEngine = mock(RuleEngine.class);
     private final OccupancyEventRouter router =
-        new OccupancyEventRouter(registry, tracker, reads, new ShellyMqttDecoder(jsonMapper), jsonMapper);
+        new OccupancyEventRouter(registry, tracker, reads, ruleEngine, new ShellyMqttDecoder(jsonMapper), jsonMapper);
 
     @BeforeEach
     void setUp() {
         when(registry.sensors()).thenReturn(List.of(DESK, STAIRS, OFFICE_PIR));
         when(reads.targetOf(anyString(), any())).thenReturn(Optional.empty());
+        when(ruleEngine.motion(any())).thenReturn(Mono.empty());
     }
 
     //the zone of the sensor - the id of the device in any case
@@ -105,6 +109,29 @@ class OccupancyEventRouterTest {
 
         verify(tracker).motion(STAIRS, true);
         verify(tracker).motion(STAIRS, false);
+    }
+
+    //a motion goes to the rules of its room, its end does not (HAS-262)
+    @Test
+    void should_hand_a_motion_to_the_rules_of_its_room() {
+        when(tracker.motion(STAIRS, true)).thenReturn(true);
+
+        route("eaton.lights.92", "{\"vendor\":\"eaton\",\"gateway\":\"lights\",\"point\":92,\"event\":\"switch on\"}");
+        route("eaton.lights.92", "{\"vendor\":\"eaton\",\"gateway\":\"lights\",\"point\":92,\"event\":\"switch off\"}");
+
+        verify(ruleEngine).motion(RoomName.STAIRS);
+    }
+
+    @Test
+    void should_hand_a_blu_motion_the_reads_took_to_the_rules_of_its_room() {
+        final OccupancyReads.Target motion = new OccupancyReads.Target(OFFICE_PIR, OccupancyReads.MOTION_OBJECT);
+        when(reads.targetOf("shelly1pmg3-abc", 203)).thenReturn(Optional.of(motion));
+        when(reads.observe(eq(motion), any())).thenReturn(true, false);
+
+        route("shelly1pmg3-abc.status.bthomesensor:203", "{\"id\":203,\"value\":true,\"last_updated_ts\":1792405079}");
+        route("shelly1pmg3-abc.status.bthomesensor:203", "{\"id\":203,\"value\":true,\"last_updated_ts\":1792405000}");
+
+        verify(ruleEngine).motion(RoomName.OFFICE);
     }
 
     //a blind on the same point of the other gateway is not the sensor

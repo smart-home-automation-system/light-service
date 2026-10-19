@@ -6,10 +6,12 @@ import cloud.cholewa.light.database.model.MotionPeriodEntity;
 import cloud.cholewa.light.database.model.RoomRuleEntity;
 import cloud.cholewa.light.database.repository.MotionPeriodRepository;
 import cloud.cholewa.light.database.repository.RoomRuleRepository;
+import cloud.cholewa.light.database.repository.RuleRunRepository;
 import cloud.cholewa.light.error.LightException;
 import cloud.cholewa.light.model.rule.MotionPeriod;
 import cloud.cholewa.light.model.rule.RoomRule;
 import cloud.cholewa.light.model.rule.RoomRuleBody;
+import cloud.cholewa.light.model.rule.RuleRun;
 import cloud.cholewa.light.occupancy.OccupancyRegistry;
 import cloud.cholewa.light.registry.LightRegistry;
 import lombok.RequiredArgsConstructor;
@@ -25,12 +27,14 @@ import java.time.temporal.ChronoUnit;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 //The rules of the rooms (HAS-261), stored in two tables. A write is one transaction: a rule stays as it
 //was while a write fails, its periods included. The body is checked first, then the room against the
-//lights and sensors the registry knows; the answer of a write is the rule read back after the commit.
-//The reads go one after the other: the pool has two connections
+//lights and sensors the registry knows; the answer of a write is the rule read back after the commit,
+//and it goes into the RuleBook of the engine at once. The reads go one after the other: the pool has two
+//connections. The runs of the engine (HAS-262) are read here too
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -40,6 +44,8 @@ public class RoomRuleService {
 
     private final RoomRuleRepository ruleRepository;
     private final MotionPeriodRepository periodRepository;
+    private final RuleRunRepository runRepository;
+    private final RuleBook ruleBook;
     private final LightRegistry lightRegistry;
     private final OccupancyRegistry occupancyRegistry;
     private final TransactionalOperator transactionalOperator;
@@ -56,6 +62,12 @@ public class RoomRuleService {
                         .map(rule -> toRule(rule, periodsOf.getOrDefault(rule.room(), List.of())))
                         .toList();
                 }));
+    }
+
+    //the same, by the room - for the RuleBook
+    public Mono<Map<RoomName, RoomRule>> byRoom() {
+        return all().map(rules -> rules.stream()
+            .collect(Collectors.toMap(rule -> RoomName.fromValue(rule.room()), Function.identity())));
     }
 
     public Mono<RoomRule> get(final RoomName room) {
@@ -79,7 +91,8 @@ public class RoomRuleService {
             .then(Mono.defer(() -> write(room, body)))
             .then(Mono.fromRunnable(() -> log.info("Rule of the {} written: autoOff {}, motionOn {}, {} periods",
                 room.getValue(), body.autoOffEnabled(), body.motionOnEnabled(), body.periods().size())))
-            .then(get(room));
+            .then(get(room))
+            .doOnNext(rule -> ruleBook.put(room, rule));
     }
 
     private Mono<Void> write(final RoomName room, final RoomRuleBody body) {
@@ -96,7 +109,10 @@ public class RoomRuleService {
     public Mono<Void> remove(final RoomName room) {
         return existing(room)
             .flatMap(rule -> ruleRepository.deleteById(rule.room()))
-            .doOnSuccess(removed -> log.info("Rule of the {} removed", room.getValue()));
+            .doOnSuccess(removed -> {
+                ruleBook.remove(room);
+                log.info("Rule of the {} removed", room.getValue());
+            });
     }
 
     //a rule already in that state is not written, so its updatedAt stays
@@ -107,7 +123,15 @@ public class RoomRuleService {
                 : ruleRepository.switchByResident(room.name(), enabled, now())
                     .doOnNext(changed -> log.info("Rule of the {} {} by the resident", room.getValue(),
                         enabled ? "switched on" : "switched off")))
-            .then(get(room));
+            .then(get(room))
+            .doOnNext(rule -> ruleBook.put(room, rule));
+    }
+
+    //what the engine sent in the room, from included and to not, whether the room has a rule now or not
+    public Mono<List<RuleRun>> runs(final RoomName room, final LocalDateTime from, final LocalDateTime to) {
+        return runRepository.findRuns(room.name(), from, to)
+            .map(run -> new RuleRun(run.deviceId(), run.action(), run.reason(), run.error(), run.at()))
+            .collectList();
     }
 
     private Mono<RoomRuleEntity> existing(final RoomName room) {

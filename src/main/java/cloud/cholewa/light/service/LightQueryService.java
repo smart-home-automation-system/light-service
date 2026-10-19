@@ -13,6 +13,9 @@ import cloud.cholewa.light.occupancy.OccupancySensor;
 import cloud.cholewa.light.occupancy.OccupancyTracker;
 import cloud.cholewa.light.occupancy.SensorBinding;
 import cloud.cholewa.light.registry.LightRegistry;
+import cloud.cholewa.light.rule.RuleBook;
+import cloud.cholewa.light.rule.RuleEngine;
+import cloud.cholewa.light.rule.RuleEvaluator;
 import cloud.cholewa.light.state.Gen1Action;
 import cloud.cholewa.light.state.LightStateTracker;
 import lombok.RequiredArgsConstructor;
@@ -21,6 +24,8 @@ import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.time.Clock;
+import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -38,6 +43,9 @@ public class LightQueryService {
     private final LightStateTracker lightStateTracker;
     private final OccupancyRegistry occupancyRegistry;
     private final OccupancyTracker occupancyTracker;
+    private final RuleEngine ruleEngine;
+    private final RuleBook ruleBook;
+    private final Clock clock;
 
     //every light, by room in the order of the rooms of the SDK, each room's in the order of the registry
     public Mono<List<RoomLights>> all() {
@@ -105,15 +113,20 @@ public class LightQueryService {
                     return Mono.error(LightException.notFound("no Gen1 motion sensor with id " + device));
                 }
                 log.debug("Gen1 motion {} of sensor {} ({})", motion, sensor.id(), sensor.name());
-                occupancyTracker.motion(sensor, motion);
+                //the lux first: the rules of the room judge the motion by it (HAS-262)
                 if (lux != null) {
                     occupancyTracker.illumination(sensor, null, lux);
                 }
-                return Mono.empty();
+                return occupancyTracker.motion(sensor, motion) ? ruleEngine.motion(sensor.room()) : Mono.empty();
             }));
     }
 
+    //the manual hold by the rule of the room as last read (HAS-262), only while it lasts
     private Mono<LightView> view(final Light light) {
-        return lightStateTracker.status(light.id()).map(status -> LightView.of(light, status));
+        return lightStateTracker.status(light.id()).map(status -> {
+            final LocalDateTime heldUntil = RuleEvaluator.heldUntil(status, ruleBook.rule(light.room()));
+            return LightView.of(light, status,
+                heldUntil != null && heldUntil.isAfter(LocalDateTime.now(clock)) ? heldUntil : null);
+        });
     }
 }

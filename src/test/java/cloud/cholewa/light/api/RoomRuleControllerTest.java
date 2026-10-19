@@ -11,6 +11,7 @@ import cloud.cholewa.light.error.processor.LightExceptionProcessor;
 import cloud.cholewa.light.model.rule.MotionPeriod;
 import cloud.cholewa.light.model.rule.RoomRule;
 import cloud.cholewa.light.model.rule.RoomRuleBody;
+import cloud.cholewa.light.model.rule.RuleRun;
 import cloud.cholewa.light.rule.RoomRuleService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -196,6 +197,52 @@ class RoomRuleControllerTest {
             .expectStatus().isBadRequest();
 
         verifyNoInteractions(roomRuleService);
+    }
+
+    //the runs of the engine (HAS-262): what a command did not take carries its code, a taken one none
+    @Test
+    void should_answer_the_runs_of_a_room() {
+        final LocalDateTime from = LocalDateTime.of(2026, 10, 19, 0, 0);
+        final LocalDateTime to = LocalDateTime.of(2026, 10, 20, 0, 0);
+        when(roomRuleService.runs(RoomName.HALL_UP, from, to)).thenReturn(Mono.just(List.of(
+            new RuleRun(120, "on", "motion-on", null, LocalDateTime.of(2026, 10, 19, 20, 0, 1)),
+            new RuleRun(120, "off", "motion-off", "DEVICE_FAILED", LocalDateTime.of(2026, 10, 19, 20, 4)))));
+
+        webTestClient.get().uri("/rooms/hall up/rules/runs?from=2026-10-19T00:00:00&to=2026-10-20T00:00:00")
+            .exchange()
+            .expectStatus().isOk()
+            .expectBody()
+            .jsonPath("$[0].deviceId").isEqualTo(120)
+            .jsonPath("$[0].action").isEqualTo("on")
+            .jsonPath("$[0].reason").isEqualTo("motion-on")
+            .jsonPath("$[0].at").isEqualTo("2026-10-19T20:00:01")
+            .jsonPath("$[0].error").doesNotExist()
+            .jsonPath("$[1].error").isEqualTo("DEVICE_FAILED");
+    }
+
+    //a week at most, to after from, both given
+    @ParameterizedTest
+    @ValueSource(strings = {
+        "from=2026-10-12T00:00:00&to=2026-10-19T00:00:01",
+        "from=2026-10-19T00:00:00&to=2026-10-19T00:00:00",
+        "from=2026-10-19T00:00:00",
+        "from=yesterday&to=2026-10-19T00:00:00"})
+    void should_refuse_runs_over_a_span_it_does_not_answer(final String query) {
+        webTestClient.get().uri("/rooms/bedroom/rules/runs?" + query)
+            .exchange()
+            .expectStatus().isBadRequest();
+
+        verifyNoInteractions(roomRuleService);
+    }
+
+    @Test
+    void should_answer_runs_of_a_whole_week() {
+        when(roomRuleService.runs(any(), any(), any())).thenReturn(Mono.just(List.of()));
+
+        webTestClient.get().uri("/rooms/bedroom/rules/runs?from=2026-10-12T00:00:00&to=2026-10-19T00:00:00")
+            .exchange()
+            .expectStatus().isOk()
+            .expectBody().json("[]");
     }
 
     //the room exactly as the registry writes it

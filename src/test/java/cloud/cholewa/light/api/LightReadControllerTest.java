@@ -33,9 +33,9 @@ class LightReadControllerTest {
 
     private static final LocalDateTime EVENING = LocalDateTime.of(2026, 10, 19, 19, 0, 5);
     private static final LightView LEFT_COLOR = new LightView(89, "Left color", "hall up", "shelly", "rgbw", true, 60,
-        new LightView.ColorView(List.of(255, 0, 0), null), EVENING, "dashboard", true);
+        new LightView.ColorView(List.of(255, 0, 0), null), EVENING, "dashboard", true, null);
     private static final LightView STAIRS = new LightView(45, "Stairs", "stairs", "eaton", "dimmer",
-        null, null, null, null, null, null);
+        null, null, null, null, null, null, null);
 
     @Autowired
     private WebTestClient webTestClient;

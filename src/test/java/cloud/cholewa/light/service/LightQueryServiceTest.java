@@ -13,25 +13,32 @@ import cloud.cholewa.light.model.LightStatus;
 import cloud.cholewa.light.model.LightView;
 import cloud.cholewa.light.model.RoomLights;
 import cloud.cholewa.light.model.RoomOccupancy;
+import cloud.cholewa.light.model.rule.RoomRule;
 import cloud.cholewa.light.occupancy.OccupancyRegistry;
 import cloud.cholewa.light.occupancy.OccupancySensor;
 import cloud.cholewa.light.occupancy.OccupancyTracker;
 import cloud.cholewa.light.occupancy.SensorBinding;
 import cloud.cholewa.light.occupancy.SensorKind;
 import cloud.cholewa.light.registry.LightRegistry;
+import cloud.cholewa.light.rule.RuleBook;
+import cloud.cholewa.light.rule.RuleEngine;
 import cloud.cholewa.light.state.Gen1Action;
 import cloud.cholewa.light.state.LightStateTracker;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.InOrder;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
+import java.time.Clock;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -54,7 +61,10 @@ class LightQueryServiceTest {
     private final LightStateTracker tracker = mock(LightStateTracker.class);
     private final OccupancyRegistry occupancyRegistry = mock(OccupancyRegistry.class);
     private final OccupancyTracker occupancyTracker = mock(OccupancyTracker.class);
-    private final LightQueryService service = new LightQueryService(registry, tracker, occupancyRegistry, occupancyTracker);
+    private final RuleEngine ruleEngine = mock(RuleEngine.class);
+    private final RuleBook ruleBook = mock(RuleBook.class);
+    private final LightQueryService service = new LightQueryService(registry, tracker, occupancyRegistry, occupancyTracker,
+        ruleEngine, ruleBook, Clock.fixed(EVENING.plusMinutes(10).atZone(ZoneId.of("Europe/Warsaw")).toInstant(), ZoneId.of("Europe/Warsaw")));
 
     @BeforeEach
     void setUp() {
@@ -63,6 +73,7 @@ class LightQueryServiceTest {
         when(tracker.status(23)).thenReturn(Mono.just(new LightStatus(true, 40, null, null, EVENING, "dashboard", true)));
         when(tracker.observe(any(), any())).thenReturn(Mono.empty());
         when(occupancyRegistry.loaded()).thenReturn(true);
+        when(ruleEngine.motion(any())).thenReturn(Mono.empty());
     }
 
     //by room in the order of the rooms of the SDK, each room's in the order of the registry
@@ -99,6 +110,29 @@ class LightQueryServiceTest {
                 assertThat(view.on()).isNull();
                 assertThat(view.changedAt()).isNull();
             })
+            .verifyComplete();
+    }
+
+    //the hold of the rule of the room after a change that was not the rules' (HAS-262), only while it lasts
+    @Test
+    void should_answer_the_manual_hold_of_a_light_while_it_lasts() {
+        when(registry.find(21)).thenReturn(Mono.just(CEILING));
+        when(ruleBook.rule(RoomName.KITCHEN)).thenReturn(kitchenRule(60), kitchenRule(5));
+
+        service.one(21).as(StepVerifier::create)
+            .assertNext(view -> assertThat(view.heldUntil()).isEqualTo(EVENING.plusMinutes(60)))
+            .verifyComplete();
+        service.one(21).as(StepVerifier::create)
+            .assertNext(view -> assertThat(view.heldUntil()).isNull())
+            .verifyComplete();
+    }
+
+    @Test
+    void should_answer_no_hold_in_a_room_without_a_rule() {
+        when(registry.find(23)).thenReturn(Mono.just(BAR));
+
+        service.one(23).as(StepVerifier::create)
+            .assertNext(view -> assertThat(view.heldUntil()).isNull())
             .verifyComplete();
     }
 
@@ -173,6 +207,23 @@ class LightQueryServiceTest {
         verify(occupancyTracker).illumination(sanctum, null, 12.0);
     }
 
+    //the lux first, then the motion, which goes to the rules of the room (HAS-262); its end does not
+    @Test
+    void should_hand_a_gen1_motion_to_the_rules_after_its_lux() {
+        final OccupancySensor sanctum = gen1Motion(94);
+        when(occupancyRegistry.sensors()).thenReturn(List.of(sanctum));
+        when(occupancyTracker.motion(sanctum, true)).thenReturn(true);
+
+        service.gen1Motion(94, true, 12.0).as(StepVerifier::create).verifyComplete();
+        service.gen1Motion(94, false, null).as(StepVerifier::create).verifyComplete();
+
+        final InOrder order = inOrder(occupancyTracker, ruleEngine);
+        order.verify(occupancyTracker).illumination(sanctum, null, 12.0);
+        order.verify(occupancyTracker).motion(sanctum, true);
+        order.verify(ruleEngine).motion(sanctum.room());
+        verify(ruleEngine).motion(any());
+    }
+
     @Test
     void should_take_the_end_of_a_gen1_motion_without_a_lux() {
         final OccupancySensor sanctum = gen1Motion(94);
@@ -218,6 +269,10 @@ class LightQueryServiceTest {
         service.gen1Motion(94, true, null).as(StepVerifier::create)
             .verifyErrorSatisfies(error -> assertThat(((LightException) error).getError()).isEqualTo(LightError.REGISTRY_UNAVAILABLE));
         verifyNoInteractions(occupancyTracker);
+    }
+
+    private static RoomRule kitchenRule(final int manualHoldMinutes) {
+        return new RoomRule("kitchen", true, 15, false, null, null, List.of(), manualHoldMinutes, true, EVENING);
     }
 
     private static OccupancySensor gen1Motion(final long id) {

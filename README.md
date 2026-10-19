@@ -35,7 +35,8 @@ Since HAS-258 it knows the lights from the device registry and switches them on 
 HAS-259 it knows whether each light is really on, whoever switched it; since HAS-260 it knows from
 the presence and motion sensors whether a room is occupied, when it last saw motion and how light it
 is; since HAS-261 it stores the rules of each room, which the administrator writes and a resident
-switches off. The engine that acts on them comes next.
+switches off; since HAS-262 the engine runs them - auto-off, motion-on and motion-off, never against a
+person and never in a room it cannot judge - and logs every command it sends.
 
 Everything is non-blocking (Spring WebFlux / Reactor):
 
@@ -95,7 +96,8 @@ Everything is non-blocking (Spring WebFlux / Reactor):
   and `presence-service` (who is at home), each a `WebClient` over k8s DNS with its own
   connect and response timeouts and its own connection pool (`internal.service.*`).
 - **The rules of a room** (HAS-261) are data of the service's own database, written whole by the
-  administrator and switched off by a resident (below); the engine that acts on them is HAS-262.
+  administrator and switched off by a resident (below); the engine (HAS-262) runs them at every motion
+  and every minute (below).
 - **The rules run in the memory of one instance**: the deployment is `Recreate` and never
   scaled; scheduling is off under the `test` profile.
 
@@ -103,7 +105,8 @@ Everything is non-blocking (Spring WebFlux / Reactor):
 
 - Build: `mvn verify` (JDK 21) **needs a running Docker**: `LightStateRepositoryTest` runs the
   PostgreSQL-only SQL of the state and the rules on a Testcontainers PostgreSQL
-  (`LightStateRepositoryTest`, `RoomRuleServiceTest`).
+  (`LightStateRepositoryTest`, `RoomRuleServiceTest`). The decisions of the engine are tested without
+  I/O (`RuleEvaluatorTest`).
 - Ports: local profile `6012` (management `8012`); in the deployed `home` profile the service
   listens on `6200` and Actuator on `8200` like every service in the cluster. The probes hit
   `/actuator/health/{readiness,liveness}` and Prometheus scrapes `/actuator/prometheus`.
@@ -142,11 +145,13 @@ taken exactly as written.
 | `PUT` | `/rooms/{room}/rules` | the rule, whole (below) | 200, the rule as stored - created or replaced; the switch of the resident is kept |
 | `DELETE` | `/rooms/{room}/rules` | - | 204 |
 | `PUT` | `/rooms/{room}/rules/resident-enabled` | `{"enabled": false}` - the switch of My room | 200, the rule as stored |
+| `GET` | `/rooms/{room}/rules/runs` | `from`, `to` - ISO date-times (`2026-10-19T00:00:00`), from included, to not, at most 7 days apart | 200, what the engine sent in the room: `[{deviceId, action, reason, error, at}]` (below) |
 | `GET` | `/events/gen1` | `device=<registry id>`, `event=on\|off` - called by a Gen1 light (`out_on_url` / `out_off_url`); or `event=motion\|motion_end` and an optional `lux=0..200000` - called by a Shelly Motion (`motion_on` / `motion_off`) | 204; a device that is not a Gen1 light / Gen1 motion sensor of the registry 404 |
 
 A light in a read: `id`, `name`, `room`, `vendor`, `kind` from the registry, and `on`,
 `brightness` (a dimmer or an rgbw light; off too - the level it comes back at), `color`
-(`{rgb, white}`, an rgbw light), `changedAt`, `source`, `reachable` from the devices. **A field the
+(`{rgb, white}`, an rgbw light), `changedAt`, `source`, `reachable` from the devices, and `heldUntil` -
+the rules of the room leave the light alone until then, after a change that was not theirs. **A field the
 service does not know is left out**, never answered as off or zero. `anyOn` of a room is `true`
 when a light is on, `false` when every light is known to be off, and left out otherwise.
 
@@ -218,6 +223,31 @@ off 3 minutes after the last motion (the colour needs an rgbw light in the hall)
 }
 ```
 
+# The engine
+
+The rules run at every fresh motion (the reaction runs apart from the event, a second after it, so the
+lux of the same sensor packet counts) and in a pass every minute, which also reads the rules again; every
+write of a rule takes effect at once. Commands go through the same drivers with `source=rule`.
+
+- **Auto-off**: every light known to be on and not held goes off `autoOffDelayMinutes` after the room is
+  empty - with a presence sensor from when it said nobody is there (or a later motion), with motion
+  sensors only from the last motion. A room whose presence sensor is not known, whose motion sensor is not
+  reachable, or which saw no motion since the start is skipped and logged once an hour.
+- **Motion-on**: at a motion at most 2 minutes old, while the room is darker than `onlyBelowLux` (a lux
+  not known never holds), every light that is not on and not held gets what the period of the moment
+  gives - a colour for an rgbw light, a brightness for one that dims, otherwise on. Outside every period:
+  nothing.
+- **Motion-off**: `motionOffAfterMinutes` after the last motion the lights the rule switched on go off,
+  unless a presence sensor of the room says somebody is there or is not known.
+- **Manual hold**: a light whose last change was not this service's (a wall switch, the Shelly app, an AMX
+  panel, the dashboard) is left alone for `manualHoldMinutes` after that change - `heldUntil` in the reads.
+- **Once**: a light gets no second command until it reports a change; a command that failed is not
+  repeated every minute.
+- A rule switched off by the resident does nothing.
+
+A run: `deviceId` (the light), `action` (`on` / `off`), `reason` (`auto-off`, `motion-on`, `motion-off`),
+`error` (the code when the light did not take the command - left out when it did), `at`.
+
 # Database
 
 - **Own database** `home-automation-light` on the managed PostgreSQL, reactive access via
@@ -228,3 +258,5 @@ off 3 minutes after the last motion (the colour needs an rgbw light in the hall)
 - `light_room_rule` and `light_motion_period` (`V2`, HAS-261): one row per room with a rule (the
   room by the name of its `RoomName` constant - renaming one needs a migration of the rows) and its
   periods, gone with it.
+- `light_rule_run` (`V3`, HAS-262): every command of the engine - `room`, `device_id`, `action`,
+  `reason`, `error`, `at`; the runs of a removed rule stay.
