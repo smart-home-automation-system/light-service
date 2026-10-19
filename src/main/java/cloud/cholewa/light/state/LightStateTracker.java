@@ -1,5 +1,6 @@
 package cloud.cholewa.light.state;
 
+import cloud.cholewa.light.database.RgbColumn;
 import cloud.cholewa.light.database.model.LightStateEntity;
 import cloud.cholewa.light.database.repository.LightStateRepository;
 import cloud.cholewa.light.model.CommandSource;
@@ -17,13 +18,11 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.stream.Collectors;
 
 //The real state of every light, whoever switched it - a wall switch, the Shelly app, an AMX panel or
 //this service: what the devices report (LightEventRouter, LightStatePoll, the Gen1 actions) is merged
@@ -67,7 +66,7 @@ public class LightStateTracker {
         //cached: read once, by whatever needs the state first; never repeated, also after a failure
         this.restored = Flux.defer(repository::findLatestPerDevice)
             .doOnNext(row -> statuses.putIfAbsent(row.deviceId(), new LightStatus(
-                row.switchedOn(), row.brightness(), rgb(row.rgb()), row.white(), row.startedAt(), row.source(), null)))
+                row.switchedOn(), row.brightness(), RgbColumn.values(row.rgb()), row.white(), row.startedAt(), row.source(), null)))
             .count()
             .doOnNext(count -> log.info("State of {} lights restored from the database", count))
             .then()
@@ -213,7 +212,7 @@ public class LightStateTracker {
                 .then();
         }
 
-        return repository.touchLatest(light.id(), now, status.brightness(), rgb(status.rgb()), status.white())
+        return repository.touchLatest(light.id(), now, status.brightness(), RgbColumn.text(status.rgb()), status.white())
             .filter(updated -> updated == 0)
             //the memory knows a state the table has no row for (rows removed by hand)
             .flatMap(nothingUpdated -> {
@@ -224,16 +223,8 @@ public class LightStateTracker {
     }
 
     private static LightStateEntity entity(final Light light, final LightStatus status, final LocalDateTime now) {
-        return new LightStateEntity(null, light.id(), status.on(), status.brightness(), rgb(status.rgb()),
+        return new LightStateEntity(null, light.id(), status.on(), status.brightness(), RgbColumn.text(status.rgb()),
             status.white(), status.source(), status.changedAt(), now);
-    }
-
-    static String rgb(final List<Integer> rgb) {
-        return rgb == null ? null : rgb.stream().map(String::valueOf).collect(Collectors.joining(","));
-    }
-
-    static List<Integer> rgb(final String rgb) {
-        return rgb == null ? null : Arrays.stream(rgb.split(",")).map(Integer::valueOf).toList();
     }
 
     record Decision(LightStatus status, boolean changed) {

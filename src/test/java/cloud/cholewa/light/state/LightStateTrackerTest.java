@@ -213,12 +213,6 @@ class LightStateTrackerTest {
         verify(repository, never()).touchLatest(anyLong(), any(), anyInt(), anyString(), anyInt());
     }
 
-    @Test
-    void should_write_rgb_as_text_and_read_it_back() {
-        assertThat(LightStateTracker.rgb(List.of(255, 128, 0))).isEqualTo("255,128,0");
-        assertThat(LightStateTracker.rgb("255,128,0")).containsExactly(255, 128, 0);
-        assertThat(LightStateTracker.rgb((String) null)).isNull();
-    }
 
     private static final class MovingClock extends Clock {
 

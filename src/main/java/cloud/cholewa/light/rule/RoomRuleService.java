@@ -1,6 +1,7 @@
 package cloud.cholewa.light.rule;
 
 import cloud.cholewa.home.model.RoomName;
+import cloud.cholewa.light.database.RgbColumn;
 import cloud.cholewa.light.database.model.MotionPeriodEntity;
 import cloud.cholewa.light.database.model.RoomRuleEntity;
 import cloud.cholewa.light.database.repository.MotionPeriodRepository;
@@ -21,7 +22,6 @@ import reactor.core.publisher.Mono;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
-import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -64,7 +64,9 @@ public class RoomRuleService {
                 .map(periods -> toRule(rule, periods)));
     }
 
-    //whole: creates the rule of the room or replaces it, the switch of the resident is kept
+    //whole: creates the rule of the room or replaces it, the switch of the resident is kept. Only the
+    //writes are the transaction: the check of the room may read the registry over HTTP, and a
+    //connection held meanwhile would be half of the pool
     public Mono<RoomRule> replace(final RoomName room, final RoomRuleBody body) {
         return Mono.fromRunnable(() -> RoomRuleRules.check(body))
             .then(Mono.defer(() -> {
@@ -74,16 +76,20 @@ public class RoomRuleService {
                 return lightRegistry.all()
                     .doOnNext(lights -> RoomRuleRules.checkRoom(room, body, lights, occupancyRegistry.sensors()));
             }))
-            .then(Mono.defer(() -> ruleRepository.upsert(room.name(), body.autoOffEnabled(), body.autoOffDelayMinutes(),
-                    body.motionOnEnabled(), body.onlyBelowLux(), body.motionOffAfterMinutes(), body.manualHoldMinutes(), now())
-                .then(periodRepository.deleteByRoom(room.name()))
-                .thenMany(Flux.fromIterable(body.periods().stream().sorted(BY_START).toList())
-                    .concatMap(period -> periodRepository.save(toEntity(room, period))))
-                .then()))
-            .as(transactionalOperator::transactional)
+            .then(Mono.defer(() -> write(room, body)))
             .then(Mono.fromRunnable(() -> log.info("Rule of the {} written: autoOff {}, motionOn {}, {} periods",
                 room.getValue(), body.autoOffEnabled(), body.motionOnEnabled(), body.periods().size())))
             .then(get(room));
+    }
+
+    private Mono<Void> write(final RoomName room, final RoomRuleBody body) {
+        return ruleRepository.upsert(room.name(), body.autoOffEnabled(), body.autoOffDelayMinutes(),
+                body.motionOnEnabled(), body.onlyBelowLux(), body.motionOffAfterMinutes(), body.manualHoldMinutes(), now())
+            .then(periodRepository.deleteByRoom(room.name()))
+            .thenMany(Flux.fromIterable(body.periods().stream().sorted(BY_START).toList())
+                .concatMap(period -> periodRepository.save(toEntity(room, period))))
+            .then()
+            .as(transactionalOperator::transactional);
     }
 
     //the periods go with it (ON DELETE CASCADE)
@@ -129,7 +135,7 @@ public class RoomRuleService {
             period.fromTime(),
             period.toTime(),
             period.brightness(),
-            period.rgb() == null ? null : Arrays.stream(period.rgb().split(",")).map(Integer::valueOf).toList(),
+            RgbColumn.values(period.rgb()),
             period.white()
         );
     }
@@ -141,7 +147,7 @@ public class RoomRuleService {
             period.from(),
             period.to(),
             period.brightness(),
-            period.rgb() == null ? null : period.rgb().stream().map(String::valueOf).collect(Collectors.joining(",")),
+            RgbColumn.text(period.rgb()),
             period.white()
         );
     }
