@@ -19,8 +19,8 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
 - Talks to: RabbitMQ — consumes `device.prod.light` on `/device` (user `device`), publishes
   notifications to `/notification` (user `notification`, a second connection); calls
   `database-service` (device registry), `amx-service` (the Eaton lights) and `presence-service`
-  (who is at home) over k8s DNS (`internal.service.*`). The command endpoints (README) are not
-  routed by `api-gateway-service` yet (HAS-265); the dashboard will branch on their codes.
+  (who is at home) over k8s DNS (`internal.service.*`). Everything is routed by `api-gateway-service`
+  >= 0.8.0 (`/light`, `/light/**`, every method, HAS-265); the dashboard will branch on the codes.
 - Uses libraries: `cholewa-commons` 1.9.0 (pool, error contract, `DownstreamErrors`, connection
   names, `NotificationPublisher`, `cholewa.required-properties`), `smart-home-sdk` 1.12.0
   (`SmartDevice` and `LightKind` of the registry; a zone as the channel of a presence sensor), `shelly-client` 2.1.0 (`ShellyGen1Client`,
@@ -101,8 +101,8 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
     reconciliation that **never changes reachability** (MQTT owns it).
   - Gen1: `/status` every 60 s (`relays[]` for a relay, `lights[]` for the rest; the mode color by
     its gain), a failure makes the light unreachable; `GET /events/gen1?device=<registry id>&event=on|off`
-    for the `out_on_url` / `out_off_url` actions - **not configured on any device yet**: they come
-    through the gateway, and `/light` is routed only with HAS-265 (owner, 2026-10-19). Unauthenticated
+    for the `out_on_url` / `out_off_url` actions - **not configured on any device yet** (no Shelly light
+    is in the registry before HAS-269); they come through the gateway, which routes `/light` since 0.8.0. Unauthenticated
     like everything behind the gateway - anyone on the LAN can write a Gen1 state; the rules must not
     act on one the next poll has not confirmed.
   - Eaton: the `status` event on `eaton.<gateway>.<point>` - the gateway of the light's own binding,
@@ -163,6 +163,11 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
     actions (no `end_of_motion` on fw v2.2.4); it sleeps, so no reachability. Eaton PIR - `switch on`
     / `switch off` on `eaton.<gateway>.<point>`; no reachability either.
   - `DeviceEventConsumer` hands every event to both routers, each with its own error handling.
-  - **On 2026-10-19 no BLU Motion was adopted by a gateway** (eight in the house, all in Shelly Cloud
-    only - the session "shelly manager"), and SANCTUM MOTION had no action towards the service: its
-    code is tested, not seen on a device yet.
+  - **Every sensor of the house is in the registry** (2026-10-19): the three Presence Gen4 (91-93), the
+    eight BLU Motion (94-100, 102 - adopted one by one, each seen on its gateway, the broker and here;
+    `deployment-tools/scripts/shelly/devices.md` lists them; PRESENCE OFFICE became BTHome gateway
+    101 for the one of bathroom up), the Shelly Motion of the sanctum (103, its actions call
+    `/events/gen1` through the gateway since api-gateway-service 0.8.0, HAS-265) and the Eaton PIR
+    of the stairs (51). The circulation sensor of bathroom up (100) reports motion rarely by its
+    settings (it drives the hot-water circulation in Shelly Cloud) - do not read its silence as an
+    empty room.
