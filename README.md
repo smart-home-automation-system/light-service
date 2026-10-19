@@ -36,7 +36,9 @@ HAS-259 it knows whether each light is really on, whoever switched it; since HAS
 the presence and motion sensors whether a room is occupied, when it last saw motion and how light it
 is; since HAS-261 it stores the rules of each room, which the administrator writes and a resident
 switches off; since HAS-262 the engine runs them - auto-off, motion-on and motion-off, never against a
-person and never in a room it cannot judge - and logs every command it sends.
+person and never in a room it cannot judge - and logs every command it sends; since HAS-263 it acts on an
+empty house - the lights left on by day are switched off, by night a presence simulation makes the house
+look lived in.
 
 Everything is non-blocking (Spring WebFlux / Reactor):
 
@@ -116,6 +118,8 @@ Everything is non-blocking (Spring WebFlux / Reactor):
   the service does not start.
 - The other services are called on their local ports: `database-service` 6005,
   `amx-service` 6001, `presence-service` 6009.
+- In the `home` profile `location-latitude` and `location-longitude` (the place of the house, for the
+  dusk and the sunrise) are mandatory too; a local run takes a place in Poland that is not the house.
 - The database connection properties (`database-host`, `database-port`, `database-name`,
   `database-user`, `database-password`) are bound to the `database.*` prefix that
   `cholewa-commons` consumes; Flyway derives its JDBC URL from them (`--flyway-url=...`
@@ -145,6 +149,9 @@ taken exactly as written.
 | `PUT` | `/rooms/{room}/rules` | the rule, whole (below) | 200, the rule as stored - created or replaced; the switch of the resident is kept |
 | `DELETE` | `/rooms/{room}/rules` | - | 204 |
 | `PUT` | `/rooms/{room}/rules/resident-enabled` | `{"enabled": false}` - the switch of My room | 200, the rule as stored |
+| `GET` | `/empty-house` | - | 200, the empty house now (below) |
+| `GET` | `/empty-house/plan` | - | 200, the plan of the presence simulation: `{phases: [...]}` - no phases without a plan |
+| `PUT` | `/empty-house/plan` | the plan, whole (below) | 200, the plan as stored |
 | `GET` | `/rooms/{room}/rules/runs` | `from`, `to` - ISO date-times (`2026-10-19T00:00:00`), from included, to not, at most 7 days apart | 200, what the engine sent in the room: `[{deviceId, action, reason, error, at}]` (below) |
 | `GET` | `/events/gen1` | `device=<registry id>`, `event=on\|off` - called by a Gen1 light (`out_on_url` / `out_off_url`); or `event=motion\|motion_end` and an optional `lux=0..200000` - called by a Shelly Motion (`motion_on` / `motion_off`) | 204; a device that is not a Gen1 light / Gen1 motion sensor of the registry 404 |
 
@@ -171,6 +178,7 @@ switch. It fails as a whole only when no light took the command.
 | 502 | `DEVICE_FAILED` | the device or `amx-service` did not take the command - it may have been carried out; the answer carries the code alone, the device message is in the log |
 | 400 | `INVALID_RULE` | a rule the service will not store - the reason in `details` (below) |
 | 404 | `NOT_FOUND_RULE` | no rule for the room |
+| 400 | `INVALID_PLAN` | a plan of the presence simulation the service will not store - the reason in `details` |
 | 502 | `REGISTRY_UNAVAILABLE` | the device registry could not be read since the start (a light, a Gen1 motion sensor, or the lights and sensors a rule is judged by) |
 
 # The rules of a room
@@ -248,6 +256,43 @@ write of a rule takes effect at once. Commands go through the same drivers with 
 A run: `deviceId` (the light), `action` (`on` / `off`), `reason` (`auto-off`, `motion-on`, `motion-off`),
 `error` (the code when the light did not take the command - left out when it did), `at`.
 
+# The empty house
+
+Every minute the service asks `presence-service` where the household is. The house is **empty** when
+every active member is away by a reading newer than 5 minutes; a member never observed, a stale reading or
+a `presence-service` that cannot be read is **unknown - never empty**. Only somebody coming home ends an
+empty house; the lights that are on then stay on and the rules take over again.
+
+After `light.empty-house.after` (10 minutes) of an empty house, while `light.empty-house.enabled`:
+
+- **The rules of the rooms pause** - they would switch the simulation off.
+- **By day** every light that is on goes off once (`source=empty-house`, no manual hold), with one
+  notification naming the rooms.
+- **By night** - from the civil dusk to the sunrise at the house (`location-latitude` / `-longitude` of the
+  manifest) - the **presence simulation** lights what the plan of the night says at each minute, with one
+  notification when it starts.
+- **Never against a person**: a light somebody switches after the house became empty (a cleaner, a guest,
+  the dashboard) is left alone until somebody of the household is back.
+- Every command is logged in `light_rule_run` - `reason` `empty-house` by day, `presence-simulation` by night.
+
+**The plan** has up to three phases - `evening`, `night`, `morning` - each written whole:
+
+| Field | |
+|---|---|
+| `phase`, `enabled` | the phase and whether it runs |
+| `from`, `to` | `HH:mm`; after noon the evening the night starts, before noon the morning after. The phase runs only between the dusk and the sunrise, and each bound moves at random by up to `jitterMinutes` (0-60) every night |
+| `minStayMinutes`, `maxStayMinutes` | how long somebody stays in a spot, 1-180 |
+| `maxSpotsAtOnce` | 1-3 stays lit at the same time |
+| `visitsMin`, `visitsMax` | left out: a continuous phase - somebody is always somewhere, moving from stay to stay; given (1-6): that many short visits, dark between them |
+| `spots: [{role, room, lights}]` | `stay` - where somebody is; `path` - lit for a moment around a move or a visit (a hall); `closing` - lit for 5-15 minutes after the end of the phase, the last light before bed. `lights` are registry ids of lights in that room |
+
+The choices of a night are random but seeded by its date: the same night always comes out the same (a
+restart picks up), another night differs. `INVALID_PLAN` names the first rule broken.
+
+`GET /empty-house`: `enabled`, `house` (`empty`, `occupied`, `unknown`), `emptySince`, `actingFrom`, `active`,
+`dusk` and `sunrise` of the night, and by night `phase`, `lit` (what the simulation lights now - a preview,
+also while somebody is at home) and `nextChangeAt`. What is not known is left out.
+
 # Database
 
 - **Own database** `home-automation-light` on the managed PostgreSQL, reactive access via
@@ -260,3 +305,5 @@ A run: `deviceId` (the light), `action` (`on` / `off`), `reason` (`auto-off`, `m
   periods, gone with it.
 - `light_rule_run` (`V3`, HAS-262): every command of the engine - `room`, `device_id`, `action`,
   `reason`, `error`, `at`; the runs of a removed rule stay.
+- `light_simulation_phase` and `light_simulation_spot` (`V4`, HAS-263): the plan of the presence
+  simulation - one row per phase, its spots in the order written, gone with it.
