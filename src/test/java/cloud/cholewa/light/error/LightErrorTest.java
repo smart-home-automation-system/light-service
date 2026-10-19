@@ -13,6 +13,7 @@ class LightErrorTest {
     @Test
     void should_keep_the_codes_callers_branch_on() {
         assertThat(Arrays.stream(LightError.values()).map(ErrorId::codeOf))
-            .containsExactly("NOT_FOUND_LIGHT", "UNSUPPORTED_CAPABILITY", "DEVICE_FAILED", "REGISTRY_UNAVAILABLE");
+            .containsExactly("NOT_FOUND_LIGHT", "UNSUPPORTED_CAPABILITY", "DEVICE_FAILED", "REGISTRY_UNAVAILABLE",
+                "INVALID_RULE", "NOT_FOUND_RULE");
     }
 }

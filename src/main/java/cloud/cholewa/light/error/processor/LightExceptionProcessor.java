@@ -10,7 +10,7 @@ import org.springframework.http.HttpStatus;
 
 import java.util.Collections;
 
-//Answers a command that was not carried out with the status and the code of its cause. A 5xx - a
+//Answers a command that was not carried out, or a rule that was not written, with the status and the code of its cause. A 5xx - a
 //device that did not take the command - is logged at ERROR, where the alerts look, with what the
 //device said; the answer carries the status and the code alone. A 4xx is the caller's, a WARN,
 //and its details are answered
@@ -26,9 +26,9 @@ public class LightExceptionProcessor implements ExceptionProcessor {
         final boolean serverError = status.is5xxServerError();
 
         if (serverError) {
-            log.error("Light command failed ({}, {}): {}", status.value(), code, exception.getMessage());
+            log.error("Light request failed ({}, {}): {}", status.value(), code, exception.getMessage());
         } else {
-            log.warn("Light command refused ({}, {}): {}", status.value(), code, exception.getMessage());
+            log.warn("Light request refused ({}, {}): {}", status.value(), code, exception.getMessage());
         }
 
         return Errors.builder()
