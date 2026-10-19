@@ -105,7 +105,7 @@ public class EmptyHouseEngine {
         return Mono.defer(() -> {
             final LocalDateTime now = now();
             final boolean active = houseState.active(now);
-            return night(now)
+            return night(now, false)
                 .map(night -> {
                     final boolean isNight = night.contains(now);
                     return new EmptyHouseStatus(
@@ -125,7 +125,7 @@ public class EmptyHouseEngine {
 
     //by night what the simulation lights now, by day nothing; one decision, its commands one after the other
     private Mono<Void> act(final LocalDateTime now) {
-        return night(now).flatMap(night -> {
+        return night(now, true).flatMap(night -> {
             final boolean isNight = night.contains(now);
             final Set<Long> lit = isNight ? night.lightsAt(now) : Set.of();
             final List<Light> lights = lightRegistry.current();
@@ -141,8 +141,10 @@ public class EmptyHouseEngine {
         });
     }
 
-    //the night a time belongs to, with the plan as stored; the plan is read only by night - by day nothing is lit
-    private Mono<Night> night(final LocalDateTime now) {
+    //The night a time belongs to, with the plan as stored; the plan is read only by night - by day nothing is lit.
+    //A plan that cannot be read skips the pass (strict): taken for no plan it would switch the simulation off and on
+    //again with every blip of the database; the status answers it without a plan
+    private Mono<Night> night(final LocalDateTime now, final boolean strict) {
         final LocalDate date = SimulationPlanner.nightOf(now);
         final SunDay today = sunCalendar.of(date);
         final SunDay tomorrow = sunCalendar.of(date.plusDays(1));
@@ -152,8 +154,9 @@ public class EmptyHouseEngine {
         }
         return simulationPlanService.get()
             .onErrorResume(e -> {
-                log.warn("The plan of the presence simulation could not be read, nothing is lit: {}", e.toString());
-                return Mono.just(SimulationPlan.NONE);
+                log.warn("The plan of the presence simulation could not be read{}: {}", strict ? ", the pass is skipped" : "",
+                    e.toString());
+                return strict ? Mono.empty() : Mono.just(SimulationPlan.NONE);
             })
             .map(plan -> SimulationPlanner.night(date, today, tomorrow, plan));
     }
@@ -205,7 +208,8 @@ public class EmptyHouseEngine {
             return publish("Nobody is at home since " + sinceText + " - the presence simulation runs until the sunrise at "
                 + night.sunrise().format(HOUR) + ".");
         }
-        if (!isNight && !dayAnnounced && actions.stream().anyMatch(action -> !action.on())) {
+        //at the sunrise the simulation switches its own lights off: that is not the lights left on of the day
+        if (!isNight && !dayAnnounced && !nightAnnounced && actions.stream().anyMatch(action -> !action.on())) {
             dayAnnounced = true;
             final String rooms = actions.stream().filter(action -> !action.on())
                 .map(action -> action.light().room().getValue()).distinct().collect(Collectors.joining(", "));

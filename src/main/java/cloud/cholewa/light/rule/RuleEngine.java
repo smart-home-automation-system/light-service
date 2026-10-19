@@ -3,6 +3,7 @@ package cloud.cholewa.light.rule;
 import cloud.cholewa.commons.error.model.ErrorId;
 import cloud.cholewa.home.model.RoomName;
 import cloud.cholewa.light.database.model.RuleRunEntity;
+import cloud.cholewa.light.config.EmptyHouseProperties;
 import cloud.cholewa.light.database.repository.RuleRunRepository;
 import cloud.cholewa.light.emptyhouse.HouseState;
 import cloud.cholewa.light.error.LightException;
@@ -71,6 +72,7 @@ public class RuleEngine {
     private final LightCommandService lightCommandService;
     private final RuleRunRepository ruleRunRepository;
     private final HouseState houseState;
+    private final EmptyHouseProperties emptyHouseProperties;
     private final Clock clock;
 
     private final Map<Long, LocalDateTime> commandedAt = new ConcurrentHashMap<>();
@@ -88,8 +90,9 @@ public class RuleEngine {
                     log.warn("The rules of the rooms could not be read, the last ones run: {}", e.toString());
                     return Mono.empty();
                 })
-                //the rules pause while nobody is at home: they would switch the presence simulation off (HAS-263)
-                .thenMany(Flux.defer(() -> houseState.active(now())
+                //the rules pause while nobody is at home and the service acts on it: they would switch the
+                //presence simulation off (HAS-263)
+                .thenMany(Flux.defer(() -> emptyHouseProperties.enabled() && houseState.active(now())
                     ? Flux.empty()
                     : Flux.fromIterable(ruleBook.all().entrySet())))
                 .concatMap(entry -> pass(entry.getKey(), entry.getValue()))
@@ -108,7 +111,8 @@ public class RuleEngine {
     public Mono<Void> motion(final RoomName room) {
         return Mono.deferContextual(context -> {
             final RoomRule rule = ruleBook.rule(room);
-            if (rule == null || !rule.enabledByResident() || !rule.motionOnEnabled() || houseState.active(now())) {
+            if (rule == null || !rule.enabledByResident() || !rule.motionOnEnabled()
+                || emptyHouseProperties.enabled() && houseState.active(now())) {
                 return Mono.empty();
             }
             (settleDelay.isZero() ? Mono.<Void>empty() : Mono.delay(settleDelay).then())

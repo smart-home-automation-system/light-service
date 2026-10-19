@@ -1,6 +1,7 @@
 package cloud.cholewa.light.rule;
 
 import cloud.cholewa.home.model.RoomName;
+import cloud.cholewa.light.config.EmptyHouseProperties;
 import cloud.cholewa.light.database.model.RuleRunEntity;
 import cloud.cholewa.light.database.repository.RuleRunRepository;
 import cloud.cholewa.light.emptyhouse.HouseState;
@@ -85,7 +86,7 @@ class RuleEngineTest {
     private final RuleRunRepository ruleRunRepository = mock(RuleRunRepository.class);
     private final HouseState houseState = mock(HouseState.class);
     private final RuleEngine engine = new RuleEngine(roomRuleService, ruleBook, lightRegistry, lightStateTracker,
-        occupancyTracker, lightCommandService, ruleRunRepository, houseState, clock);
+        occupancyTracker, lightCommandService, ruleRunRepository, houseState, new EmptyHouseProperties(true, Duration.ofMinutes(10)), clock);
 
     @BeforeEach
     void setUp() {
@@ -190,6 +191,21 @@ class RuleEngineTest {
         assertThat(ruleBook.rule(RoomName.BEDROOM)).isEqualTo(bedroomRule());
         verify(lightCommandService, never()).turn(anyLong(), any(), any());
         verify(lightCommandService, never()).brightness(anyLong(), anyInt(), any());
+    }
+
+    //the service does not act on an empty house: no simulation to protect, the rules go on
+    @Test
+    void should_not_pause_the_rules_when_the_empty_house_is_switched_off() {
+        final RuleEngine withoutEmptyHouse = new RuleEngine(roomRuleService, ruleBook, lightRegistry, lightStateTracker,
+            occupancyTracker, lightCommandService, ruleRunRepository, houseState,
+            new EmptyHouseProperties(false, Duration.ofMinutes(10)), clock);
+        withoutEmptyHouse.settleDelay = Duration.ZERO;
+        when(houseState.active(any())).thenReturn(true);
+        when(lightStateTracker.status(BEDROOM_CEILING.id())).thenReturn(Mono.just(on("external", EVENING.minusHours(2))));
+
+        withoutEmptyHouse.tick().as(StepVerifier::create).verifyComplete();
+
+        verify(lightCommandService).turn(BEDROOM_CEILING.id(), Turn.OFF, CommandSource.RULE);
     }
 
     @Test

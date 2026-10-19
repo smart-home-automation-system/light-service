@@ -132,6 +132,35 @@ class EmptyHouseEngineTest {
             .publishInfo("Nobody is at home since 17:00 - the presence simulation runs until the sunrise at 07:00.");
     }
 
+    //a database away at night: the pass is skipped - taken for no plan it would switch the simulation off
+    @Test
+    void should_skip_a_night_pass_whose_plan_cannot_be_read() {
+        when(lightStateTracker.status(KITCHEN_CEILING.id())).thenReturn(Mono.just(on("empty-house", DAY.atTime(18, 0, 5))));
+        when(simulationPlanService.get()).thenReturn(Mono.error(new IllegalStateException("database away")));
+        now.set(DAY.atTime(17, 0));
+        tick();
+        now.set(DAY.atTime(18, 0));
+        tick();
+
+        verify(lightCommandService, never()).turn(anyLong(), any(), any());
+        verify(notificationPublisher, never()).publishInfo(anyString());
+    }
+
+    //at the sunrise the simulation switches its own lights off - without the notification of the lights left on
+    @Test
+    void should_switch_the_simulation_off_at_the_sunrise_without_a_notification_of_the_day() {
+        now.set(DAY.atTime(17, 0));
+        tick();
+        now.set(DAY.atTime(18, 0));
+        tick();
+        when(lightStateTracker.status(KITCHEN_CEILING.id())).thenReturn(Mono.just(on("empty-house", DAY.atTime(18, 0, 5))));
+        now.set(DAY.plusDays(1).atTime(7, 0));
+        tick();
+
+        verify(lightCommandService).turn(KITCHEN_CEILING.id(), Turn.OFF, CommandSource.EMPTY_HOUSE);
+        verify(notificationPublisher, times(1)).publishInfo(anyString());
+    }
+
     @Test
     void should_do_nothing_while_somebody_is_at_home_or_nobody_can_tell() {
         when(lightStateTracker.status(BEDROOM_CEILING.id())).thenReturn(Mono.just(on("dashboard", NOON.minusHours(1))));

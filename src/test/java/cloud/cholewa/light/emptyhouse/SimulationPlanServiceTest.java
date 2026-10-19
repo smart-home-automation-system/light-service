@@ -109,6 +109,16 @@ class SimulationPlanServiceTest {
         sut.get().as(StepVerifier::create).expectNext(SimulationPlan.NONE).verifyComplete();
     }
 
+    //removing the simulation has no light to judge: it needs no registry
+    @Test
+    void should_remove_the_plan_without_the_registry() {
+        sut.replace(new SimulationPlan(List.of(EVENING))).block();
+        org.mockito.Mockito.when(lightRegistry.all()).thenReturn(Mono.error(LightException.registryUnavailable(
+            new IllegalStateException("database-service away"))));
+
+        sut.replace(SimulationPlan.NONE).as(StepVerifier::create).expectNext(SimulationPlan.NONE).verifyComplete();
+    }
+
     @Test
     void should_replace_a_plan_whole() {
         sut.replace(new SimulationPlan(List.of(EVENING, NIGHT))).block();

@@ -62,7 +62,8 @@ public class SimulationPlanService {
 
     public Mono<SimulationPlan> replace(final SimulationPlan plan) {
         return Mono.fromRunnable(() -> PlanRules.check(plan))
-            .then(Mono.defer(lightRegistry::all))
+            //a plan without phases has no light to judge: removing the simulation needs no registry
+            .then(Mono.defer(() -> plan.phases().isEmpty() ? Mono.empty() : lightRegistry.all()))
             .doOnNext(lights -> PlanRules.checkLights(plan, lights))
             .then(Mono.defer(() -> write(plan)))
             .then(Mono.fromRunnable(() -> log.info("Presence simulation plan written: {}",
