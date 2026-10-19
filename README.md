@@ -32,8 +32,9 @@ by the rules of each room - motion, presence and an empty house (epic HAS-256). 
 Eaton devices, switched through `amx-service`, and Shelly devices.
 
 Since HAS-258 it knows the lights from the device registry and switches them on command; since
-HAS-259 it knows whether each light is really on, whoever switched it. The rules of the rooms come
-next.
+HAS-259 it knows whether each light is really on, whoever switched it; since HAS-260 it knows from
+the presence and motion sensors whether a room is occupied, when it last saw motion and how light it
+is. The rules of the rooms come next.
 
 Everything is non-blocking (Spring WebFlux / Reactor):
 
@@ -65,6 +66,21 @@ Everything is non-blocking (Spring WebFlux / Reactor):
   start. A change within 2 minutes of a command of this service is attributed to the command's
   `source`, otherwise to what the Shelly device names (`button`, `switch`) or `external`.
 
+- **The occupancy of a room** comes from the switched-on presence and motion sensors of the registry
+  and the BTHome gateways (read every 5 minutes), held in memory only - **after a start every room is
+  unknown, never empty**:
+
+  | | how | reachability |
+  |---|---|---|
+  | Shelly Presence Gen4 (`presence sensor`, a zone as its channel - 200 is the main zone) | MQTT `presencezone:<zone>` and `illuminance:0` at once; the zone and the light read every 5 minutes reconcile | its `online` topic |
+  | Shelly BLU Motion (`motion sensor`, `bthome`) | the `bthomesensor` components of motion (`0x21`) and illuminance (`0x05`) of every BTHome gateway, mapped every 5 minutes, then their MQTT status | a gateway confirmed it within 30 minutes |
+  | Shelly Motion Gen1 (`motion sensor`, generation 1) | `GET /events/gen1` with `event=motion\|motion_end` from its `motion_on` / `motion_off` actions | - (it sleeps) |
+  | Eaton PIR (`motion sensor`, `eaton`) | `switch on` / `switch off` of `amx-service` | - |
+
+  A room is occupied when one presence sensor says so, empty when every one does, and not known
+  otherwise - also while one of them is off the broker. `lastMotionAt` is the newest motion of any
+  motion sensor of the room, `illumination` the newest word of a Presence (`dark`, `twilight`,
+  `bright`), `lux` the newest number of a motion sensor.
 - **Device events** arrive from RabbitMQ, virtual host `/device` (user `device`), queue
   `device.prod.light` (`device.dev.light` in the `local` profile). The queue is bound to
   `amq.topic` with `#`, so it gets every event of every device — the status topics of the
@@ -113,16 +129,22 @@ taken exactly as written.
 | `POST` | `/{id}/brightness` | `value=1..100` (switches the light on), `source` | 202 |
 | `POST` | `/{id}/color` | `{"rgb": [r, g, b], "white": w, "brightness": b}` - rgb and white 0..255, brightness 1..100, each part optional (the device keeps what is left out), at least one; switches the light on. `source` | 202 |
 | `POST` | `/rooms/{room}` | `turn=on\|off`, `source`; the room as the registry writes it (`living room`) | 202 with `{room, turn, switched: [{id, name}], failed: [{id, name, code}]}` |
-| `GET` | the base path itself | - | 200, every light by room: `[{room, anyOn, lights: [...]}]` |
-| `GET` | `/rooms/{room}` | - | 200, `{room, anyOn, lights: [...]}` |
+| `GET` | the base path itself | - | 200, every light by room: `[{room, anyOn, lights: [...], occupancy: {...}}]` |
+| `GET` | `/rooms/{room}` | - | 200, `{room, anyOn, lights: [...], occupancy: {...}}` |
+| `GET` | `/rooms/{room}/occupancy` | - | 200, the occupancy of the room (below) - also of a room without lights or sensors |
 | `GET` | `/{id}` | - | 200, one light |
-| `GET` | `/events/gen1` | `device=<registry id>`, `event=on\|off` - called by a Gen1 device (`out_on_url` / `out_off_url`) | 204; a device that is not a Gen1 light of the registry 404 |
+| `GET` | `/events/gen1` | `device=<registry id>`, `event=on\|off` - called by a Gen1 light (`out_on_url` / `out_off_url`); or `event=motion\|motion_end` and an optional `lux=0..200000` - called by a Shelly Motion (`motion_on` / `motion_off`) | 204; a device that is not a Gen1 light / Gen1 motion sensor of the registry 404 |
 
 A light in a read: `id`, `name`, `room`, `vendor`, `kind` from the registry, and `on`,
 `brightness` (a dimmer or an rgbw light; off too - the level it comes back at), `color`
 (`{rgb, white}`, an rgbw light), `changedAt`, `source`, `reachable` from the devices. **A field the
 service does not know is left out**, never answered as off or zero. `anyOn` of a room is `true`
 when a light is on, `false` when every light is known to be off, and left out otherwise.
+
+The occupancy of a room: `room`, `occupied` (`true` / `false`), `since` (when the service saw it
+change), `lastMotionAt`, `illumination` (`dark`, `twilight`, `bright`), `lux`, and `sensors: [{id, name,
+kind, lastReportAt, reachable}]` - **each left out while it is not known**: no rule may act on a room
+that only looks empty.
 
 A room is switched one light after the other; one that fails is named in `failed`, the rest still
 switch. It fails as a whole only when no light took the command.
@@ -133,7 +155,7 @@ switch. It fails as a whole only when no light took the command.
 | 400 | `UNSUPPORTED_CAPABILITY` | a brightness for a relay, a color for a light without one, white for a Gen2 device in the profile rgb |
 | 404 | `NOT_FOUND_LIGHT` | no switched-on light with that id, no light in the room |
 | 502 | `DEVICE_FAILED` | the device or `amx-service` did not take the command - it may have been carried out; the answer carries the code alone, the device message is in the log |
-| 502 | `REGISTRY_UNAVAILABLE` | the device registry could not be read since the start |
+| 502 | `REGISTRY_UNAVAILABLE` | the device registry could not be read since the start (a light, or a Gen1 motion sensor) |
 
 # Database
 
