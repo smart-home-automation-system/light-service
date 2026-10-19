@@ -89,23 +89,28 @@ public class LightQueryService {
 
     //The motion_on / motion_off actions of a Shelly Motion (HAS-260): it sleeps and cannot be asked, so
     //this is all it says - with the lux of the moment when its URL carries one. A device that is not a
-    //Gen1 motion sensor of the registry, as last read, is a 404
+    //Gen1 motion sensor of the registry, as last read, is a 404; until the registry was read once it is
+    //read first, and a registry still away is REGISTRY_UNAVAILABLE - never a 404 for a real sensor
     public Mono<Void> gen1Motion(final long device, final boolean motion, final Double lux) {
-        return Mono.defer(() -> {
-            final OccupancySensor sensor = occupancyRegistry.sensors().stream()
-                .filter(candidate -> candidate.id() == device && candidate.binding() instanceof SensorBinding.Gen1Motion)
-                .findFirst()
-                .orElse(null);
-            if (sensor == null) {
-                return Mono.error(LightException.notFound("no Gen1 motion sensor with id " + device));
-            }
-            log.debug("Gen1 motion {} of sensor {} ({})", motion, sensor.id(), sensor.name());
-            occupancyTracker.motion(sensor, motion);
-            if (lux != null) {
-                occupancyTracker.illumination(sensor, null, lux);
-            }
-            return Mono.empty();
-        });
+        return Mono.defer(() -> occupancyRegistry.loaded() ? Mono.empty() : occupancyRegistry.refresh())
+            .then(Mono.defer(() -> occupancyRegistry.loaded()
+                ? Mono.empty()
+                : Mono.error(LightException.registryUnavailable(new IllegalStateException("the registry was never read")))))
+            .then(Mono.defer(() -> {
+                final OccupancySensor sensor = occupancyRegistry.sensors().stream()
+                    .filter(candidate -> candidate.id() == device && candidate.binding() instanceof SensorBinding.Gen1Motion)
+                    .findFirst()
+                    .orElse(null);
+                if (sensor == null) {
+                    return Mono.error(LightException.notFound("no Gen1 motion sensor with id " + device));
+                }
+                log.debug("Gen1 motion {} of sensor {} ({})", motion, sensor.id(), sensor.name());
+                occupancyTracker.motion(sensor, motion);
+                if (lux != null) {
+                    occupancyTracker.illumination(sensor, null, lux);
+                }
+                return Mono.empty();
+            }));
     }
 
     private Mono<LightView> view(final Light light) {

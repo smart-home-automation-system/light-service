@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 
@@ -32,6 +33,8 @@ public class OccupancyRegistry {
 
     private final AtomicReference<List<OccupancySensor>> sensors = new AtomicReference<>(List.of());
     private final AtomicReference<List<Gateway>> gateways = new AtomicReference<>(List.of());
+    //false until one read of the registry succeeded: until then an empty list is no answer
+    private final AtomicBoolean loaded = new AtomicBoolean();
 
     /** A BTHome gateway of the registry: a Shelly on the network, by its MQTT id in lower case. */
     public record Gateway(long id, String name, String address, String deviceId) {
@@ -53,6 +56,7 @@ public class OccupancyRegistry {
                     log.info("Sensors of the occupancy known from the device registry: {}", readSensors.size());
                 }
                 gateways.set(toGateways(read.getT3()));
+                loaded.set(true);
             })
             .doOnError(e -> log.warn("Refresh of the sensors of the occupancy failed, the last ones stay: {}", e.toString()))
             .onErrorComplete()
@@ -61,6 +65,11 @@ public class OccupancyRegistry {
 
     public List<OccupancySensor> sensors() {
         return sensors.get();
+    }
+
+    /** Whether the registry was read once: a lookup before it would take every sensor for unknown. */
+    public boolean loaded() {
+        return loaded.get();
     }
 
     public List<Gateway> gateways() {

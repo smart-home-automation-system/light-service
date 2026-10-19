@@ -54,7 +54,8 @@ public class OccupancyReads {
 
     //which component of which gateway is what of which sensor
     private final Map<GatewayComponent, Target> components = new ConcurrentHashMap<>();
-    //the devices the last read failed on, by address
+    //the reads that failed last time - a gateway by its address, a presence sensor by its id: Presence Livia
+    //is both, on one address
     private final Set<String> failing = ConcurrentHashMap.newKeySet();
 
     public OccupancyReads(
@@ -109,9 +110,9 @@ public class OccupancyReads {
         return shellyRpcClient.dynamicComponents(gateway.address())
             .doOnNext(list -> {
                 apply(gateway, list);
-                answered(gateway.address(), "Gateway " + gateway.id() + " (" + gateway.name() + ")");
+                answered("gateway " + gateway.address(), "Gateway " + gateway.id() + " (" + gateway.name() + ")");
             })
-            .doOnError(e -> failed(gateway.address(), "Gateway " + gateway.id() + " (" + gateway.name() + ")", e))
+            .doOnError(e -> failed("gateway " + gateway.address(), "Gateway " + gateway.id() + " (" + gateway.name() + ")", e))
             .onErrorComplete()
             .then();
     }
@@ -166,8 +167,8 @@ public class OccupancyReads {
             .then(shellyRpcClient.status(presence.address()))
             .doOnNext(status -> illuminance(status.get(ILLUMINANCE))
                 .ifPresent(read -> occupancyTracker.illumination(sensor, read.getIllumination(), read.getLux())))
-            .doOnNext(status -> answered(presence.address(), device))
-            .doOnError(e -> failed(presence.address(), device, e))
+            .doOnNext(status -> answered("presence " + sensor.id(), device))
+            .doOnError(e -> failed("presence " + sensor.id(), device, e))
             .onErrorComplete()
             .then();
     }
@@ -177,14 +178,14 @@ public class OccupancyReads {
         return raw instanceof Map<?, ?> map ? as((Map<String, Object>) map, IlluminanceStatus.class) : Optional.empty();
     }
 
-    private void answered(final String address, final String device) {
-        if (failing.remove(address)) {
+    private void answered(final String read, final String device) {
+        if (failing.remove(read)) {
             log.info("{} is read again", device);
         }
     }
 
-    private void failed(final String address, final String device, final Throwable e) {
-        if (failing.add(address)) {
+    private void failed(final String read, final String device, final Throwable e) {
+        if (failing.add(read)) {
             log.warn("{} could not be read: {}", device, e.toString());
         }
     }

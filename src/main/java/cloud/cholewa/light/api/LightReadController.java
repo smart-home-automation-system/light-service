@@ -63,11 +63,11 @@ public class LightReadController {
         if (MOTION.equals(event) || MOTION_END.equals(event)) {
             handled = lightQueryService.gen1Motion(device, MOTION.equals(event), lux);
         } else {
+            final Gen1Action action = Gen1Action.ofParameter(event)
+                .orElseThrow(() -> new ServerWebInputException("event must be on, off, motion or motion_end"));
             if (lux != null) {
                 throw new ServerWebInputException("lux belongs to a motion event");
             }
-            final Gen1Action action = Gen1Action.ofParameter(event)
-                .orElseThrow(() -> new ServerWebInputException("event must be on, off, motion or motion_end"));
             handled = lightQueryService.gen1Action(device, action);
         }
         return handled.then(Mono.fromSupplier(() -> ResponseEntity.noContent().build()));

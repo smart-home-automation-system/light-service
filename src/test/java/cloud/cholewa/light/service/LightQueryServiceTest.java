@@ -62,6 +62,7 @@ class LightQueryServiceTest {
         when(tracker.status(21)).thenReturn(Mono.just(new LightStatus(false, null, null, null, EVENING, "external", null)));
         when(tracker.status(23)).thenReturn(Mono.just(new LightStatus(true, 40, null, null, EVENING, "dashboard", true)));
         when(tracker.observe(any(), any())).thenReturn(Mono.empty());
+        when(occupancyRegistry.loaded()).thenReturn(true);
     }
 
     //by room in the order of the rooms of the SDK, each room's in the order of the registry
@@ -192,6 +193,30 @@ class LightQueryServiceTest {
         service.gen1Motion(51, true, null).as(StepVerifier::create)
             .verifyErrorSatisfies(error -> assertThat(error).isInstanceOf(LightException.class)
                 .extracting(e -> ((LightException) e).getError()).isEqualTo(LightError.NOT_FOUND_LIGHT));
+        verifyNoInteractions(occupancyTracker);
+    }
+
+    //right after a start the registry is read first: a real sensor must not get a 404
+    @Test
+    void should_read_the_registry_first_when_a_gen1_motion_comes_before_it() {
+        final OccupancySensor sanctum = gen1Motion(94);
+        when(occupancyRegistry.loaded()).thenReturn(false, true);
+        when(occupancyRegistry.refresh()).thenReturn(Mono.empty());
+        when(occupancyRegistry.sensors()).thenReturn(List.of(sanctum));
+
+        service.gen1Motion(94, true, null).as(StepVerifier::create).verifyComplete();
+
+        verify(occupancyRegistry).refresh();
+        verify(occupancyTracker).motion(sanctum, true);
+    }
+
+    @Test
+    void should_answer_a_gen1_motion_with_registry_unavailable_while_the_registry_is_away() {
+        when(occupancyRegistry.loaded()).thenReturn(false);
+        when(occupancyRegistry.refresh()).thenReturn(Mono.empty());
+
+        service.gen1Motion(94, true, null).as(StepVerifier::create)
+            .verifyErrorSatisfies(error -> assertThat(((LightException) error).getError()).isEqualTo(LightError.REGISTRY_UNAVAILABLE));
         verifyNoInteractions(occupancyTracker);
     }
 

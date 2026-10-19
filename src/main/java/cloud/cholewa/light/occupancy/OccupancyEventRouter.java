@@ -13,6 +13,7 @@ import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.util.List;
 import java.util.Optional;
 
 //Which sensor of the occupancy an event of the device queue is about, and what it says (HAS-260). As for
@@ -80,25 +81,29 @@ public class OccupancyEventRouter {
                 .orElseGet(Mono::empty);
         }
 
-        final OccupancySensor sensor = occupancyRegistry.sensors().stream()
+        //one device may stand for several sensors, a zone each: its place on the broker and its light are
+        //every one's, a zone only its own sensor's
+        final List<OccupancySensor> sensors = occupancyRegistry.sensors().stream()
             .filter(candidate -> candidate.binding() instanceof SensorBinding.Presence presence
                 && topic.deviceId().equalsIgnoreCase(presence.deviceId()))
-            .findFirst()
-            .orElse(null);
-        if (sensor == null) {
+            .toList();
+        if (sensors.isEmpty()) {
             return Mono.empty();
         }
-        final int zone = ((SensorBinding.Presence) sensor.binding()).zone();
 
         return switch (topic.kind()) {
             case ONLINE -> Mono.fromCallable(() -> shellyMqttDecoder.decode(topic, body))
                 .flatMap(Mono::justOrEmpty)
                 .cast(ShellyEvent.Online.class)
-                .doOnNext(online -> occupancyTracker.online(sensor, online.online()))
+                .doOnNext(online -> sensors.forEach(sensor -> occupancyTracker.online(sensor, online.online())))
                 .then();
             case STATUS -> {
-                if (ZONE.equals(topic.component()) && topic.index() != null && topic.index() == zone) {
-                    yield decode(topic, body)
+                if (ZONE.equals(topic.component()) && topic.index() != null) {
+                    final OccupancySensor sensor = sensors.stream()
+                        .filter(candidate -> ((SensorBinding.Presence) candidate.binding()).zone() == topic.index())
+                        .findFirst()
+                        .orElse(null);
+                    yield sensor == null ? Mono.empty() : decode(topic, body)
                         .flatMap(status -> Mono.justOrEmpty(status.as(PresenceStatus.class)))
                         .flatMap(status -> Mono.justOrEmpty(Optional.ofNullable(status.getValue())))
                         .doOnNext(occupied -> occupancyTracker.presence(sensor, occupied, true))
@@ -107,7 +112,8 @@ public class OccupancyEventRouter {
                 if (ILLUMINANCE.equals(topic.component())) {
                     yield decode(topic, body)
                         .flatMap(status -> Mono.justOrEmpty(status.as(IlluminanceStatus.class)))
-                        .doOnNext(status -> occupancyTracker.illumination(sensor, status.getIllumination(), status.getLux()))
+                        .doOnNext(status -> sensors.forEach(sensor ->
+                            occupancyTracker.illumination(sensor, status.getIllumination(), status.getLux())))
                         .then();
                 }
                 yield Mono.empty();

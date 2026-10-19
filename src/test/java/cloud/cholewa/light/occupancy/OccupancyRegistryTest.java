@@ -93,6 +93,7 @@ class OccupancyRegistryTest {
     //a database-service away for a moment must not make every room unknown
     @Test
     void should_keep_the_last_sensors_when_a_read_fails() {
+        assertThat(registry.loaded()).isFalse();
         when(client.getPresenceSensors()).thenReturn(Mono.just(List.of(device(91, DeviceKind.PRESENCE_SENSOR)
             .vendor(SmartVendor.SHELLY)
             .shelly(ShellyBinding.builder().address("10.0.0.1").generation(4).deviceId("shellypresence-a").channel(200).build())
@@ -100,6 +101,7 @@ class OccupancyRegistryTest {
         when(client.getMotionSensors()).thenReturn(Mono.just(List.of()));
         when(client.getBthomeGateways()).thenReturn(Mono.just(List.of()));
         registry.refresh().as(StepVerifier::create).verifyComplete();
+        assertThat(registry.loaded()).isTrue();
 
         when(client.getPresenceSensors()).thenReturn(Mono.error(new RegistryCallException("database-service answered 503")));
         registry.refresh().as(StepVerifier::create).verifyComplete();

@@ -16,6 +16,7 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -54,6 +55,25 @@ class OccupancyEventRouterTest {
         route("ShellyPresence-CCBA97EE868C.status.presencezone:200", "{\"id\":200,\"value\":true,\"num_objects\":1}");
 
         verify(tracker).presence(DESK, true, true);
+    }
+
+    //one device, two zones registered: each zone is its own sensor, the broker and the light are both's
+    @Test
+    void should_route_each_zone_of_one_presence_to_its_own_sensor() {
+        final OccupancySensor door = new OccupancySensor(98, "Door", RoomName.OFFICE, SensorKind.PRESENCE,
+            new SensorBinding.Presence("10.0.0.1", "shellypresence-ccba97ee868c", 201));
+        when(registry.sensors()).thenReturn(List.of(DESK, door));
+
+        route("shellypresence-ccba97ee868c.status.presencezone:201", "{\"id\":201,\"value\":true,\"num_objects\":1}");
+        route("shellypresence-ccba97ee868c.online", "false");
+        route("shellypresence-ccba97ee868c.status.illuminance:0", "{\"id\":0,\"illumination\":\"dark\"}");
+
+        verify(tracker).presence(door, true, true);
+        verify(tracker, never()).presence(eq(DESK), anyBoolean(), anyBoolean());
+        verify(tracker).online(DESK, false);
+        verify(tracker).online(door, false);
+        verify(tracker).illumination(DESK, "dark", null);
+        verify(tracker).illumination(door, "dark", null);
     }
 
     //the Door zone of the office Presence is no zone of a sensor
