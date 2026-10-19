@@ -42,6 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.when;
 
 //The plan of the presence simulation on the tables of V4 (HAS-263), in a PostgreSQL of Testcontainers like
 //RoomRuleServiceTest: what is stored is what is read back, in the order of the phases and of the spots; a plan
@@ -91,7 +92,7 @@ class SimulationPlanServiceTest {
     @BeforeEach
     void forgetThePlan() {
         reset(spotRepository);
-        org.mockito.Mockito.when(lightRegistry.all()).thenReturn(Mono.just(LIGHTS));
+        when(lightRegistry.all()).thenReturn(Mono.just(LIGHTS));
         sut.replace(SimulationPlan.NONE).block();
     }
 
@@ -113,7 +114,7 @@ class SimulationPlanServiceTest {
     @Test
     void should_remove_the_plan_without_the_registry() {
         sut.replace(new SimulationPlan(List.of(EVENING))).block();
-        org.mockito.Mockito.when(lightRegistry.all()).thenReturn(Mono.error(LightException.registryUnavailable(
+        when(lightRegistry.all()).thenReturn(Mono.error(LightException.registryUnavailable(
             new IllegalStateException("database-service away"))));
 
         sut.replace(SimulationPlan.NONE).as(StepVerifier::create).expectNext(SimulationPlan.NONE).verifyComplete();

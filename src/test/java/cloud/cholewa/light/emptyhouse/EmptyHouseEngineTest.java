@@ -36,6 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -258,7 +259,7 @@ class EmptyHouseEngineTest {
     void should_carry_on_past_a_notification_and_a_log_that_fail() {
         when(lightStateTracker.status(BEDROOM_CEILING.id())).thenReturn(Mono.just(on("dashboard", NOON.minusHours(1))));
         when(notificationPublisher.publishInfo(anyString())).thenReturn(Mono.error(new IllegalStateException("broker away")));
-        org.mockito.Mockito.doReturn(Mono.error(new IllegalStateException("database away"))).when(ruleRunRepository).save(any());
+        doReturn(Mono.error(new IllegalStateException("database away"))).when(ruleRunRepository).save(any());
         tick();
         now.set(NOON.plusMinutes(10));
 

@@ -11,10 +11,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
-import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -83,7 +83,7 @@ class SimulationPlannerTest {
     void should_keep_every_stay_within_its_bounds() {
         nights(WINTER).forEach(night -> of(night, PhaseName.EVENING, SpotRole.STAY).stream()
             .filter(segment -> segment.from().isBefore(night.date().plusDays(1).atTime(0, 0)))
-            .forEach(segment -> assertThat(Duration.between(segment.from(), segment.to()).toMinutes()).isBetween(1L, 40L)));
+            .forEach(segment -> assertThat(ChronoUnit.MINUTES.between(segment.from(), segment.to())).isBetween(1L, 40L)));
     }
 
     //the hall for the two minutes around a move, the last light before bed 5 to 15 minutes after the evening
@@ -91,12 +91,12 @@ class SimulationPlannerTest {
     void should_light_the_path_around_a_move_and_the_closing_after_the_evening() {
         nights(WINTER).forEach(night -> {
             assertThat(of(night, PhaseName.EVENING, SpotRole.PATH))
-                .allSatisfy(path -> assertThat(Duration.between(path.from(), path.to()).toMinutes()).isBetween(1L, 2L));
+                .allSatisfy(path -> assertThat(ChronoUnit.MINUTES.between(path.from(), path.to())).isBetween(1L, 2L));
             final LocalDateTime end = of(night, PhaseName.EVENING, SpotRole.STAY).stream().map(Segment::to)
                 .max(LocalDateTime::compareTo).orElseThrow();
             assertThat(of(night, PhaseName.EVENING, SpotRole.CLOSING)).singleElement().satisfies(closing -> {
                 assertThat(closing.from()).isEqualTo(end);
-                assertThat(Duration.between(closing.from(), closing.to()).toMinutes()).isBetween(5L, 15L);
+                assertThat(ChronoUnit.MINUTES.between(closing.from(), closing.to())).isBetween(5L, 15L);
             });
         });
         assertThat(nights(WINTER).flatMap(night -> of(night, PhaseName.EVENING, SpotRole.PATH).stream())).isNotEmpty();
@@ -108,7 +108,7 @@ class SimulationPlannerTest {
         nights(WINTER).forEach(night -> {
             final List<Segment> visits = of(night, PhaseName.NIGHT, SpotRole.STAY);
             assertThat(visits).hasSizeBetween(1, 2).allSatisfy(visit -> {
-                assertThat(Duration.between(visit.from(), visit.to()).toMinutes()).isBetween(3L, 8L);
+                assertThat(ChronoUnit.MINUTES.between(visit.from(), visit.to())).isBetween(3L, 8L);
                 assertThat(visit.from()).isAfterOrEqualTo(night.date().plusDays(1).atTime(0, 15));
                 assertThat(visit.to()).isBeforeOrEqualTo(night.date().plusDays(1).atTime(5, 15));
                 assertThat(of(night, PhaseName.NIGHT, SpotRole.PATH))

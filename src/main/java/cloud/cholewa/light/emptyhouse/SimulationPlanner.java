@@ -8,10 +8,10 @@ import cloud.cholewa.light.model.emptyhouse.SpotRole;
 import lombok.AccessLevel;
 import lombok.NoArgsConstructor;
 
-import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
@@ -28,9 +28,9 @@ import java.util.stream.Stream;
 //- The night is the civil dusk of its date to the sunrise of the next; a phase runs only inside it, its own
 //  from and to (after noon the evening, before noon the morning after) each moved by up to its jitter.
 //- A continuous phase: somebody is always in a stay spot, staying minStay-maxStay minutes, then moving to
-//  another; sometimes a second stay is lit for a while (up to maxSpotsAtOnce); a path spot (the hall) is lit
-//  for the two minutes around a move, every other move; a closing spot is lit for 5-15 minutes after the end
-//  of the phase - the last light before bed.
+//  another. Sometimes a second stay is lit for a while, up to maxSpotsAtOnce. A path spot (the hall) is lit
+//  for the two minutes around every other move, and a closing spot for 5 to 15 minutes after the end of the
+//  phase - the last light before bed.
 //- A visits phase: visitsMin-visitsMax visits spread over the phase, each a stay of minStay-maxStay minutes
 //  with its path lit a minute before and after; dark between them.
 @NoArgsConstructor(access = AccessLevel.PRIVATE)
@@ -154,10 +154,12 @@ public final class SimulationPlanner {
         final List<Spot> stays = of(phase, SpotRole.STAY);
         final List<Spot> paths = of(phase, SpotRole.PATH);
         final int count = between(phase.visitsMin(), phase.visitsMax(), random);
-        final long slice = Duration.between(start, end).toMinutes() / count;
+        //minutes of the wall clock, as every bound of the plan
+        final long slice = ChronoUnit.MINUTES.between(start, end) / count;
 
         for (int visit = 0; visit < count; visit++) {
-            final int minutes = (int) Math.max(1, Math.min(between(phase.minStayMinutes(), phase.maxStayMinutes(), random), slice - 2));
+            //a short phase cuts the stay to its slice, never below a minute
+            final int minutes = (int) Math.max(1L, Math.min((long) between(phase.minStayMinutes(), phase.maxStayMinutes(), random), slice - 2));
             final long room = slice - minutes - 2;
             final LocalDateTime from = start.plusMinutes(visit * slice + 1 + (room > 0 ? random.nextInt((int) room + 1) : 0));
             final LocalDateTime to = earliest(from.plusMinutes(minutes), end);

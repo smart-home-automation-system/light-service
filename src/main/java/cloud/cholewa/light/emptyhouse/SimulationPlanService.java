@@ -67,7 +67,7 @@ public class SimulationPlanService {
             .doOnNext(lights -> PlanRules.checkLights(plan, lights))
             .then(Mono.defer(() -> write(plan)))
             .then(Mono.fromRunnable(() -> log.info("Presence simulation plan written: {}",
-                plan.phases().stream().map(phase -> phase.phase().value() + (phase.enabled() ? "" : " (off)"))
+                plan.phases().stream().map(phase -> phase.phase().value() + (Boolean.TRUE.equals(phase.enabled()) ? "" : " (off)"))
                     .collect(Collectors.joining(", ")))))
             .then(get());
     }
