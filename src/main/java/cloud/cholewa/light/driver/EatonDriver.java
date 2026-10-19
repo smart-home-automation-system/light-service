@@ -46,6 +46,15 @@ public class EatonDriver implements LightDriver {
             .build(point));
     }
 
+    //asks the actuator for its state (amx-service >= 2.4.0, HAS-259): its answer arrives as the usual
+    //status event, not here
+    public Mono<Void> requestStatus(final Light light) {
+        final int point = point(light);
+        return post(uriBuilder -> uriBuilder
+            .path("/home/amx/eaton/lights/{point}/status")
+            .build(point));
+    }
+
     @Override
     public Mono<Void> color(final Light light, final Color color) {
         return Mono.error(() -> LightException.unsupported(light, "a color"));

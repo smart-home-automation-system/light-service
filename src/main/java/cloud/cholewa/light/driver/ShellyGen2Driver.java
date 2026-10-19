@@ -1,5 +1,6 @@
 package cloud.cholewa.light.driver;
 
+import cloud.cholewa.light.driver.Gen2Profiles.ColorComponent;
 import cloud.cholewa.light.error.LightException;
 import cloud.cholewa.light.model.Color;
 import cloud.cholewa.light.model.Light;
@@ -9,23 +10,17 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
 
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 
 //A Gen2+ device by the kind of the light, with id = channel: a relay is Switch.Set, a dimmer
-//Light.Set, an rgbw light RGB.Set or RGBW.Set - which one is the profile of the device, not the
-//registry: a Plus RGBW PM in the profile rgb has the component rgb:<id> and no white channel (both of
-//the house were in it on 2026-10-11), in the profile rgbw it has rgbw:<id>. The profile is read from
-//Shelly.GetStatus the first time it is needed and kept; a command that fails forgets it, so a device
-//switched to the other profile is read again
+//Light.Set, an rgbw light RGB.Set or RGBW.Set by the profile of the device (Gen2Profiles). A command
+//that fails makes the profile be read again
 @Component
 @RequiredArgsConstructor
 public class ShellyGen2Driver implements LightDriver {
 
     private final ShellyRpcClient shellyRpcClient;
-
-    private final Map<LightBinding.ShellyGen2, ColorComponent> profiles = new ConcurrentHashMap<>();
+    private final Gen2Profiles gen2Profiles;
 
     @Override
     public Mono<Void> turn(final Light light, final boolean on) {
@@ -63,41 +58,17 @@ public class ShellyGen2Driver implements LightDriver {
         });
     }
 
-    private Mono<Void> colored(
-        final LightBinding.ShellyGen2 device,
-        final Function<ColorComponent, Mono<Void>> command
-    ) {
-        return profile(device)
+    private Mono<Void> colored(final LightBinding.ShellyGen2 device, final Function<ColorComponent, Mono<Void>> command) {
+        return gen2Profiles.of(device)
             .flatMap(command)
             .doOnError(e -> {
                 if (!(e instanceof LightException)) {
-                    profiles.remove(device);
+                    gen2Profiles.forget(device);
                 }
             });
-    }
-
-    private Mono<ColorComponent> profile(final LightBinding.ShellyGen2 device) {
-        final ColorComponent known = profiles.get(device);
-        if (known != null) {
-            return Mono.just(known);
-        }
-        return shellyRpcClient.status(device.address())
-            .flatMap(status -> {
-                if (status.containsKey("rgb:" + device.channel())) {
-                    return Mono.just(ColorComponent.RGB);
-                }
-                if (status.containsKey("rgbw:" + device.channel())) {
-                    return Mono.just(ColorComponent.RGBW);
-                }
-                return Mono.error(new IllegalStateException("device " + device.address() + " has no component rgb:"
-                    + device.channel() + " or rgbw:" + device.channel()));
-            })
-            .doOnNext(component -> profiles.put(device, component));
     }
 
     private static LightBinding.ShellyGen2 binding(final Light light) {
         return (LightBinding.ShellyGen2) light.binding();
     }
-
-    enum ColorComponent { RGB, RGBW }
 }

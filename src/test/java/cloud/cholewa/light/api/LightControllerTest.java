@@ -4,6 +4,7 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
+import cloud.cholewa.home.model.EatonGatewayType;
 import cloud.cholewa.home.model.LightKind;
 import cloud.cholewa.home.model.RoomName;
 import cloud.cholewa.home.model.SmartVendor;
@@ -49,7 +50,7 @@ import static org.mockito.Mockito.when;
 class LightControllerTest {
 
     private static final Light CEILING = new Light(21, "Kitchen ceiling", RoomName.KITCHEN, SmartVendor.EATON,
-        new LightBinding.Eaton(27), LightKind.RELAY);
+        new LightBinding.Eaton(27, EatonGatewayType.LIGHTS), LightKind.RELAY);
 
     private final ListAppender<ILoggingEvent> processorLog = new ListAppender<>();
 

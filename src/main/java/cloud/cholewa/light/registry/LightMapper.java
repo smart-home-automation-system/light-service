@@ -55,15 +55,16 @@ final class LightMapper {
         final int channel = shelly.getChannel() == null ? 0 : shelly.getChannel();
 
         return Optional.of(shelly.getGeneration() >= 2
-            ? new LightBinding.ShellyGen2(shelly.getAddress(), channel)
+            ? new LightBinding.ShellyGen2(shelly.getAddress(), channel, shelly.getDeviceId())
             : new LightBinding.ShellyGen1(shelly.getAddress(), channel));
     }
 
-    //the gateway is not named: amx-service finds it in the same registry by the point
+    //a command names no gateway - amx-service finds it in the same registry by the point; the events
+    //are told apart by it (eaton.<gateway>.<point>), so a light without one receives none
     private static Optional<LightBinding> eaton(final EatonBinding eaton) {
         if (eaton == null || eaton.getPoint() == null) {
             return Optional.empty();
         }
-        return Optional.of(new LightBinding.Eaton(eaton.getPoint()));
+        return Optional.of(new LightBinding.Eaton(eaton.getPoint(), eaton.getGateway()));
     }
 }

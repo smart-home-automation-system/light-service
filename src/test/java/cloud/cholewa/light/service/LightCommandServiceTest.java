@@ -14,6 +14,7 @@ import cloud.cholewa.light.model.LightBinding;
 import cloud.cholewa.light.model.RoomCommandReply.LightOutcome;
 import cloud.cholewa.light.model.Turn;
 import cloud.cholewa.light.registry.LightRegistry;
+import cloud.cholewa.light.state.LightStateTracker;
 import cloud.cholewa.shelly.http.ShellyCallException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -42,7 +43,8 @@ class LightCommandServiceTest {
     private final LightRegistry registry = mock(LightRegistry.class);
     private final LightDrivers drivers = mock(LightDrivers.class);
     private final LightDriver driver = mock(LightDriver.class);
-    private final LightCommandService service = new LightCommandService(registry, drivers);
+    private final LightStateTracker tracker = mock(LightStateTracker.class);
+    private final LightCommandService service = new LightCommandService(registry, drivers, tracker);
 
     @BeforeEach
     void setUp() {
@@ -59,6 +61,27 @@ class LightCommandServiceTest {
         service.turn(21, Turn.OFF, CommandSource.EMPTY_HOUSE).as(StepVerifier::create).verifyComplete();
 
         verify(driver).turn(CEILING, false);
+    }
+
+    //a device may report the change before it answers: the command is noted before the call, and kept
+    //when the call fails - it may have switched the light all the same
+    @Test
+    void should_note_the_command_for_the_tracker_before_the_device_is_called() {
+        when(driver.turn(CEILING, true)).thenReturn(Mono.error(new ShellyCallException("timed out")));
+
+        service.turn(21, Turn.ON, CommandSource.RULE).as(StepVerifier::create).expectError(LightException.class).verify();
+
+        final InOrder order = inOrder(tracker, driver);
+        order.verify(tracker).commanded(CEILING, CommandSource.RULE);
+        order.verify(driver).turn(CEILING, true);
+    }
+
+    //a command refused for what the light cannot do never reaches the tracker
+    @Test
+    void should_not_note_a_refused_command() {
+        service.brightness(21, 30, CommandSource.DASHBOARD).as(StepVerifier::create).expectError(LightException.class).verify();
+
+        verify(tracker, never()).commanded(any(), any());
     }
 
     @Test

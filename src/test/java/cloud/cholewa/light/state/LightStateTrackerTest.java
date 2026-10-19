@@ -1,0 +1,250 @@
+package cloud.cholewa.light.state;
+
+import cloud.cholewa.home.model.EatonGatewayType;
+import cloud.cholewa.home.model.LightKind;
+import cloud.cholewa.home.model.RoomName;
+import cloud.cholewa.home.model.SmartVendor;
+import cloud.cholewa.light.database.model.LightStateEntity;
+import cloud.cholewa.light.database.repository.LightStateRepository;
+import cloud.cholewa.light.model.CommandSource;
+import cloud.cholewa.light.model.Light;
+import cloud.cholewa.light.model.LightBinding;
+import cloud.cholewa.light.model.LightReading;
+import cloud.cholewa.light.model.LightStatus;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.test.StepVerifier;
+
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+class LightStateTrackerTest {
+
+    private static final ZoneId ZONE = ZoneId.of("Europe/Warsaw");
+    private static final LocalDateTime EVENING = LocalDateTime.of(2026, 10, 19, 19, 0);
+    private static final Light SOFA = new Light(25, "Sofa", RoomName.LIVING_ROOM, SmartVendor.EATON,
+        new LightBinding.Eaton(24, EatonGatewayType.LIGHTS), LightKind.DIMMER);
+    private static final LightStatus ON_AT_40 = new LightStatus(true, 40, null, null, EVENING, "dashboard", true);
+
+    private final LightStateRepository repository = mock(LightStateRepository.class);
+    private final MovingClock clock = new MovingClock(EVENING.atZone(ZONE).toInstant());
+    private LightStateTracker tracker;
+
+    @BeforeEach
+    void setUp() {
+        when(repository.findLatestPerDevice()).thenReturn(Flux.empty());
+        when(repository.save(any())).thenAnswer(invocation -> Mono.just(invocation.getArgument(0)));
+        when(repository.touchLatest(anyLong(), any(), any(), any(), any())).thenReturn(Mono.just(1));
+        tracker = new LightStateTracker(repository, clock);
+    }
+
+    @Test
+    void should_take_the_first_report_of_a_light_as_a_change() {
+        final LightStateTracker.Decision decision =
+            LightStateTracker.decide(LightStatus.unknown(), new LightReading(true, 40, null, null, "button"), EVENING, null);
+
+        assertThat(decision.changed()).isTrue();
+        assertThat(decision.status()).isEqualTo(new LightStatus(true, 40, null, null, EVENING, "button", true));
+    }
+
+    @Test
+    void should_take_a_switch_as_a_change_attributed_to_the_pending_command() {
+        final LightStateTracker.Decision decision =
+            LightStateTracker.decide(ON_AT_40, LightReading.switched(false), EVENING.plusMinutes(5), "empty-house");
+
+        assertThat(decision.changed()).isTrue();
+        assertThat(decision.status().on()).isFalse();
+        assertThat(decision.status().source()).isEqualTo("empty-house");
+        assertThat(decision.status().changedAt()).isEqualTo(EVENING.plusMinutes(5));
+        //what the report did not say is kept: an Eaton dimmer that reports 0 keeps its level
+        assertThat(decision.status().brightness()).isEqualTo(40);
+    }
+
+    //a light dimmed from a wall button stays on, but its brightness changed
+    @Test
+    void should_take_another_brightness_or_color_as_a_change() {
+        assertThat(LightStateTracker.decide(ON_AT_40, new LightReading(true, 70, null, null, null), EVENING, null).changed())
+            .isTrue();
+
+        final LightStatus red = new LightStatus(true, 60, List.of(255, 0, 0), null, EVENING, "dashboard", true);
+        final LightStateTracker.Decision green =
+            LightStateTracker.decide(red, new LightReading(true, 60, List.of(0, 255, 0), null, null), EVENING, null);
+        assertThat(green.changed()).isTrue();
+        assertThat(green.status().source()).isEqualTo(LightStateTracker.EXTERNAL);
+        assertThat(LightStateTracker.decide(red, new LightReading(true, 60, List.of(255, 0, 0), 10, null), EVENING, null)
+            .changed()).isFalse();
+    }
+
+    //the same state again moves nothing but last_checked_at, and fills in what the report adds
+    @Test
+    void should_confirm_the_same_state_and_keep_when_and_who() {
+        final LightStatus switchedOn = new LightStatus(true, null, null, null, EVENING, "external", false);
+
+        final LightStateTracker.Decision decision = LightStateTracker.decide(
+            switchedOn, new LightReading(true, 55, null, null, "init"), EVENING.plusMinutes(1), "dashboard");
+
+        assertThat(decision.changed()).isFalse();
+        assertThat(decision.status()).isEqualTo(new LightStatus(true, 55, null, null, EVENING, "external", true));
+    }
+
+    @Test
+    void should_store_a_row_only_when_the_state_changes() {
+        tracker.observe(SOFA, new LightReading(true, 40, null, null, null)).as(StepVerifier::create).verifyComplete();
+        tracker.observe(SOFA, new LightReading(true, 40, null, null, null)).as(StepVerifier::create).verifyComplete();
+        tracker.observe(SOFA, LightReading.switched(false)).as(StepVerifier::create).verifyComplete();
+
+        final ArgumentCaptor<LightStateEntity> rows = ArgumentCaptor.forClass(LightStateEntity.class);
+        verify(repository, times(2)).save(rows.capture());
+        assertThat(rows.getAllValues()).extracting(LightStateEntity::switchedOn).containsExactly(true, false);
+        assertThat(rows.getAllValues().get(1).brightness()).isEqualTo(40);
+        verify(repository).touchLatest(eq(25L), any(), eq(40), eq(null), eq(null));
+    }
+
+    @Test
+    void should_attribute_the_change_to_the_command_within_its_window_only() {
+        tracker.commanded(SOFA, CommandSource.DASHBOARD);
+        tracker.observe(SOFA, new LightReading(true, 40, null, null, "HTTP_in")).as(StepVerifier::create).verifyComplete();
+
+        tracker.commanded(SOFA, CommandSource.RULE);
+        clock.advance(LightStateTracker.COMMAND_WINDOW.plusSeconds(1));
+        tracker.observe(SOFA, LightReading.switched(false)).as(StepVerifier::create).verifyComplete();
+
+        final ArgumentCaptor<LightStateEntity> rows = ArgumentCaptor.forClass(LightStateEntity.class);
+        verify(repository, times(2)).save(rows.capture());
+        assertThat(rows.getAllValues()).extracting(LightStateEntity::source).containsExactly("dashboard", "external");
+    }
+
+    //a command is used up by the change it made, not by a confirmation of the state before it
+    @Test
+    void should_keep_the_command_for_its_change_over_a_confirmation() {
+        tracker.observe(SOFA, LightReading.switched(false)).as(StepVerifier::create).verifyComplete();
+        tracker.commanded(SOFA, CommandSource.DASHBOARD);
+        tracker.observe(SOFA, LightReading.switched(false)).as(StepVerifier::create).verifyComplete();
+        tracker.observe(SOFA, LightReading.switched(true)).as(StepVerifier::create).verifyComplete();
+
+        tracker.status(25).as(StepVerifier::create)
+            .assertNext(status -> assertThat(status.source()).isEqualTo("dashboard"))
+            .verifyComplete();
+    }
+
+    @Test
+    void should_cut_the_word_of_a_device_to_the_width_of_the_column() {
+        final LightStateTracker.Decision decision = LightStateTracker.decide(
+            LightStatus.unknown(), new LightReading(true, null, null, null, "x".repeat(80)), EVENING, null);
+
+        assertThat(decision.status().source()).hasSize(50);
+    }
+
+    @Test
+    void should_start_from_the_latest_rows_of_the_database() {
+        when(repository.findLatestPerDevice()).thenReturn(Flux.just(
+            new LightStateEntity(7L, 25, true, 30, null, null, "button", EVENING, EVENING.plusHours(1)),
+            new LightStateEntity(8L, 89, true, 60, "255,0,0", null, "dashboard", EVENING, EVENING)));
+        tracker = new LightStateTracker(repository, clock);
+
+        tracker.status(25).as(StepVerifier::create)
+            .assertNext(status -> assertThat(status).isEqualTo(new LightStatus(true, 30, null, null, EVENING, "button", null)))
+            .verifyComplete();
+        tracker.status(89).as(StepVerifier::create)
+            .assertNext(status -> assertThat(status.rgb()).containsExactly(255, 0, 0))
+            .verifyComplete();
+        tracker.status(99).as(StepVerifier::create)
+            .assertNext(status -> assertThat(status).isEqualTo(LightStatus.unknown()))
+            .verifyComplete();
+        verify(repository, times(1)).findLatestPerDevice();
+    }
+
+    //a database away at the start is no reason not to take the readings: they rebuild the state
+    @Test
+    void should_go_on_from_the_devices_when_the_restore_fails() {
+        when(repository.findLatestPerDevice()).thenReturn(Flux.error(new IllegalStateException("database away")));
+        tracker = new LightStateTracker(repository, clock);
+
+        tracker.observe(SOFA, LightReading.switched(true)).as(StepVerifier::create).verifyComplete();
+
+        tracker.status(25).as(StepVerifier::create)
+            .assertNext(status -> assertThat(status.on()).isTrue())
+            .verifyComplete();
+    }
+
+    //the memory knows a state the table has no row for (rows removed by hand)
+    @Test
+    void should_open_a_row_when_there_is_none_to_confirm() {
+        when(repository.touchLatest(anyLong(), any(), any(), any(), any())).thenReturn(Mono.just(0));
+        tracker.observe(SOFA, LightReading.switched(true)).as(StepVerifier::create).verifyComplete();
+        tracker.observe(SOFA, LightReading.switched(true)).as(StepVerifier::create).verifyComplete();
+
+        verify(repository, times(2)).save(any());
+    }
+
+    @Test
+    void should_know_reachability_apart_from_the_state() {
+        tracker.reachability(SOFA, false, "the device left the broker").as(StepVerifier::create).verifyComplete();
+        tracker.status(25).as(StepVerifier::create)
+            .assertNext(status -> {
+                assertThat(status.reachable()).isFalse();
+                assertThat(status.on()).isNull();
+            })
+            .verifyComplete();
+
+        tracker.observe(SOFA, LightReading.switched(true)).as(StepVerifier::create).verifyComplete();
+        tracker.status(25).as(StepVerifier::create)
+            .assertNext(status -> assertThat(status.reachable()).isTrue())
+            .verifyComplete();
+        verify(repository, never()).touchLatest(anyLong(), any(), anyInt(), anyString(), anyInt());
+    }
+
+    @Test
+    void should_write_rgb_as_text_and_read_it_back() {
+        assertThat(LightStateTracker.rgb(List.of(255, 128, 0))).isEqualTo("255,128,0");
+        assertThat(LightStateTracker.rgb("255,128,0")).containsExactly(255, 128, 0);
+        assertThat(LightStateTracker.rgb((String) null)).isNull();
+    }
+
+    private static final class MovingClock extends Clock {
+
+        private Instant now;
+
+        private MovingClock(final Instant now) {
+            this.now = now;
+        }
+
+        void advance(final Duration duration) {
+            now = now.plus(duration);
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZONE;
+        }
+
+        @Override
+        public Clock withZone(final ZoneId zone) {
+            return this;
+        }
+
+        @Override
+        public Instant instant() {
+            return now;
+        }
+    }
+}

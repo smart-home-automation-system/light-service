@@ -41,7 +41,7 @@ class ShellyDriversTest {
     private final ShellyGen1Client gen1Client = mock(ShellyGen1Client.class);
     private final ShellyRpcClient rpcClient = mock(ShellyRpcClient.class);
     private final ShellyGen1Driver gen1Driver = new ShellyGen1Driver(gen1Client);
-    private final ShellyGen2Driver gen2Driver = new ShellyGen2Driver(rpcClient);
+    private final ShellyGen2Driver gen2Driver = new ShellyGen2Driver(rpcClient, new Gen2Profiles(rpcClient));
 
     @ParameterizedTest
     @ValueSource(booleans = {true, false})
@@ -185,6 +185,6 @@ class ShellyDriversTest {
     }
 
     private static Light gen2(final LightKind kind) {
-        return new Light(71, "Hall up left", RoomName.HALL_UP, SmartVendor.SHELLY, new LightBinding.ShellyGen2(GEN2, 1), kind);
+        return new Light(71, "Hall up left", RoomName.HALL_UP, SmartVendor.SHELLY, new LightBinding.ShellyGen2(GEN2, 1, "shellyplusrgbwpm-30c922571bdc"), kind);
     }
 }

@@ -1,6 +1,5 @@
 package cloud.cholewa.light.api;
 
-import cloud.cholewa.home.model.RoomName;
 import cloud.cholewa.light.model.Color;
 import cloud.cholewa.light.model.CommandSource;
 import cloud.cholewa.light.model.RoomCommandReply;
@@ -18,7 +17,6 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ServerWebInputException;
 import reactor.core.publisher.Mono;
 
-import java.util.Arrays;
 import java.util.List;
 
 //The commands for the lights. 202, not 200: the answer says the device took the command, never that
@@ -71,7 +69,7 @@ public class LightController {
         @RequestParam final String turn,
         @RequestParam(defaultValue = "dashboard") final String source
     ) {
-        return lightCommandService.turnRoom(room(room), turn(turn), source(source))
+        return lightCommandService.turnRoom(Rooms.exactly(room), turn(turn), source(source))
             .map(reply -> ResponseEntity.accepted().body(reply));
     }
 
@@ -102,14 +100,5 @@ public class LightController {
             throw new ServerWebInputException("brightness must be between 1 and 100");
         }
         return color;
-    }
-
-    //the value of the room exactly as the registry writes it, "living room" included - fromValue of
-    //the SDK ignores the case, a command here does not
-    private static RoomName room(final String room) {
-        return Arrays.stream(RoomName.values())
-            .filter(name -> name.getValue().equals(room))
-            .findFirst()
-            .orElseThrow(() -> new ServerWebInputException("room is not a room of the house"));
     }
 }
