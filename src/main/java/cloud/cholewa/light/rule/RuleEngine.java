@@ -34,13 +34,16 @@ import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 
 //The rules engine (HAS-262): runs RuleEvaluator against the rooms with a rule and sends what it decides
 //through LightCommandService with the source rule - so the change a command makes is the rule's, and starts
 //no hold. Two triggers: a fresh motion of a sensor (motion-on, at once) and the pass of every minute
-//(auto-off, motion-off, the rules read again). Everything runs in the memory of the one instance; what it
+//(auto-off, motion-off, the rules read again). A motion is reacted to apart from the event that brought it,
+//with its context (the trace goes on): neither the device queue nor the HTTP call of a Shelly Motion waits for
+//the commands, and neither can cancel them halfway. Everything runs in the memory of the one instance; what it
 //remembers - when it last commanded a light, when it last named a room it could not judge - is lost with a
 //restart, which only lets one command more through.
 //Every command is logged in light_rule_run, whatever its outcome; a log that cannot be written is a WARN,
@@ -54,6 +57,10 @@ public class RuleEngine {
     static final Duration PASS_TIMEOUT = Duration.ofSeconds(50);
     //a room that cannot be judged is named this often, not every minute
     static final Duration SKIP_LOG_EVERY = Duration.ofHours(1);
+    //a BLU Motion reports its motion and its lux as two components of one packet, published one after the
+    //other: the lux of the motion's own packet is waited for before the room is judged by it
+    static final Duration SETTLE = Duration.ofSeconds(1);
+    private static final int ERROR_LENGTH = 50;
 
     private final RoomRuleService roomRuleService;
     private final RuleBook ruleBook;
@@ -66,6 +73,8 @@ public class RuleEngine {
 
     private final Map<Long, LocalDateTime> commandedAt = new ConcurrentHashMap<>();
     private final Map<RoomName, LocalDateTime> skipLoggedAt = new ConcurrentHashMap<>();
+    //zero in the tests
+    Duration settle = SETTLE;
 
     //Spring subscribes again to the same Mono for every run: everything is read inside the chain
     @Scheduled(initialDelayString = "PT1M", fixedDelayString = "PT1M")
@@ -87,22 +96,27 @@ public class RuleEngine {
             });
     }
 
-    /** A sensor of the room just saw a motion: never fails, a failure is logged. */
+    /**
+     * A sensor of the room just saw a motion. Completes at once: the reaction runs on its own, with the context
+     * of the caller, and never fails - a failure is logged.
+     */
     public Mono<Void> motion(final RoomName room) {
-        return Mono.defer(() -> {
-                final RoomRule rule = ruleBook.rule(room);
-                if (rule == null || !rule.enabledByResident() || !rule.motionOnEnabled()) {
-                    return Mono.empty();
-                }
-                return decide(room, rule, snapshot -> RuleEvaluator.motion(snapshot, now()))
-                    .flatMapMany(Flux::fromIterable)
-                    .concatMap(action -> execute(room, action))
-                    .then();
-            })
-            .onErrorResume(e -> {
-                log.error("The motion rule of the {} failed: {}", room.getValue(), e.toString());
+        return Mono.deferContextual(context -> {
+            final RoomRule rule = ruleBook.rule(room);
+            if (rule == null || !rule.enabledByResident() || !rule.motionOnEnabled()) {
                 return Mono.empty();
-            });
+            }
+            (settle.isZero() ? Mono.<Void>empty() : Mono.delay(settle).then())
+                .then(Mono.defer(() -> decide(room, rule, snapshot -> RuleEvaluator.motion(snapshot, now()))))
+                .flatMap(decision -> run(room, decision))
+                .onErrorResume(e -> {
+                    log.error("The motion rule of the {} failed: {}", room.getValue(), e.toString());
+                    return Mono.empty();
+                })
+                .contextWrite(context)
+                .subscribe(null, e -> log.error("The motion rule of the {} failed: {}", room.getValue(), e.toString()));
+            return Mono.empty();
+        });
     }
 
     //one room of the pass, with its own error handling: one room that fails stops none after it
@@ -112,9 +126,7 @@ public class RuleEngine {
                 skipped(room, verdict.skipped());
                 return verdict.actions();
             })
-            .flatMapMany(Flux::fromIterable)
-            .concatMap(action -> execute(room, action))
-            .then()
+            .flatMap(decision -> run(room, decision))
             .onErrorResume(e -> {
                 log.error("The rules of the {} failed: {}", room.getValue(), e.toString());
                 return Mono.empty();
@@ -123,14 +135,14 @@ public class RuleEngine {
 
     //The states are read first; the decision and the note of the commands it makes are taken together, so a
     //motion and the pass deciding at once never both command the same light
-    private Mono<List<RuleAction>> decide(
+    private Mono<Decision> decide(
         final RoomName room,
         final RoomRule rule,
         final Function<RoomSnapshot, List<RuleAction>> evaluate
     ) {
         final List<Light> lights = lightRegistry.current().stream().filter(light -> light.room() == room).toList();
         if (lights.isEmpty()) {
-            return Mono.just(List.of());
+            return Mono.just(new Decision(List.of(), now()));
         }
         return Flux.fromIterable(lights)
             .concatMap(light -> lightStateTracker.status(light.id()).map(status -> new LightState(light, status)))
@@ -143,9 +155,26 @@ public class RuleEngine {
                         .toList());
                     final List<RuleAction> actions = evaluate.apply(snapshot);
                     actions.forEach(action -> commandedAt.put(action.light().id(), now));
-                    return actions;
+                    return new Decision(actions, now);
                 }
             });
+    }
+
+    //One command after the other. A pass cut off by its timeout leaves the lights it never got to unmarked -
+    //a command that was not sent must not hold the next one back; the one in flight stays marked, it may
+    //have been carried out
+    private Mono<Void> run(final RoomName room, final Decision decision) {
+        final Set<Long> started = ConcurrentHashMap.newKeySet();
+        return Flux.fromIterable(decision.actions())
+            .concatMap(action -> {
+                started.add(action.light().id());
+                return execute(room, action);
+            })
+            .then()
+            .doOnCancel(() -> decision.actions().stream()
+                .map(action -> action.light().id())
+                .filter(id -> !started.contains(id))
+                .forEach(id -> commandedAt.remove(id, decision.at())));
     }
 
     private void skipped(final RoomName room, final String why) {
@@ -173,9 +202,11 @@ public class RuleEngine {
             .onErrorResume(e -> {
                 log.error("Rule of the {}: light {} ({}) did not take the command: {}", room.getValue(), light.id(),
                     light.name(), e.getMessage());
-                return Mono.just(Optional.of(e instanceof LightException failure
+                //the width of the column
+                final String code = e instanceof LightException failure
                     ? ErrorId.codeOf(failure.getError())
-                    : e.getClass().getSimpleName()));
+                    : e.getClass().getSimpleName();
+                return Mono.just(Optional.of(code.length() > ERROR_LENGTH ? code.substring(0, ERROR_LENGTH) : code));
             })
             .flatMap(error -> ruleRunRepository.save(new RuleRunEntity(null, room.name(), light.id(),
                     action.on() ? "on" : "off", action.reason().value(), error.orElse(null), at))
@@ -210,5 +241,9 @@ public class RuleEngine {
     }
 
     private record LightState(Light light, LightStatus status) {
+    }
+
+    //what one decision commands, and when it was taken - the mark it left on each light
+    private record Decision(List<RuleAction> actions, LocalDateTime at) {
     }
 }

@@ -22,6 +22,7 @@ import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -86,6 +87,7 @@ class RuleEngineTest {
 
     @BeforeEach
     void setUp() {
+        engine.settle = Duration.ZERO;
         when(lightRegistry.current()).thenReturn(List.of(BEDROOM_CEILING, BEDROOM_RELAY, HALL_LEFT, HALL_DIMMER, HALL_RELAY));
         when(lightStateTracker.status(anyLong())).thenReturn(Mono.just(off()));
         when(lightCommandService.turn(anyLong(), any(), any())).thenReturn(Mono.empty());
@@ -140,6 +142,37 @@ class RuleEngineTest {
         verify(lightCommandService).turn(BEDROOM_CEILING.id(), Turn.OFF, CommandSource.RULE);
         verify(ruleRunRepository).save(new RuleRunEntity(null, "BEDROOM", BEDROOM_CEILING.id(), "off", "auto-off",
             "DEVICE_FAILED", EVENING));
+    }
+
+    //cut off by its timeout with a command in flight: the light it never got to is commanded by the next
+    //pass, the one in flight is not commanded again
+    @Test
+    void should_leave_the_lights_a_cut_off_pass_never_got_to_free_for_the_next_one() {
+        when(lightStateTracker.status(BEDROOM_CEILING.id())).thenReturn(Mono.just(on("external", EVENING.minusHours(2))));
+        when(lightStateTracker.status(BEDROOM_RELAY.id())).thenReturn(Mono.just(on("external", EVENING.minusHours(2))));
+        when(lightCommandService.turn(BEDROOM_CEILING.id(), Turn.OFF, CommandSource.RULE)).thenReturn(Mono.never());
+
+        StepVerifier.withVirtualTime(engine::tick)
+            .thenAwait(RuleEngine.PASS_TIMEOUT.plusSeconds(1))
+            .verifyComplete();
+        verify(lightCommandService, never()).turn(BEDROOM_RELAY.id(), Turn.OFF, CommandSource.RULE);
+
+        now.set(EVENING.plusMinutes(1));
+        engine.tick().as(StepVerifier::create).verifyComplete();
+
+        verify(lightCommandService).turn(BEDROOM_RELAY.id(), Turn.OFF, CommandSource.RULE);
+        verify(lightCommandService).turn(BEDROOM_CEILING.id(), Turn.OFF, CommandSource.RULE);
+    }
+
+    //the event that brought the motion is done at once, the commands go on without it
+    @Test
+    void should_complete_a_motion_before_its_commands_do() {
+        ruleBook.replace(Map.of(RoomName.HALL_UP, hallRule()));
+        when(lightCommandService.brightness(HALL_LEFT.id(), 80, CommandSource.RULE)).thenReturn(Mono.never());
+
+        engine.motion(RoomName.HALL_UP).as(StepVerifier::create).verifyComplete();
+
+        verify(lightCommandService).brightness(HALL_LEFT.id(), 80, CommandSource.RULE);
     }
 
     @Test

@@ -196,8 +196,11 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
 - **The rules engine** (HAS-262), `RuleEngine` around the pure `RuleEvaluator` (pinned by `RuleEvaluatorTest`,
   no I/O) - it never fights a person and never acts on a room it cannot judge:
   - **Two triggers**: a fresh motion (`OccupancyTracker.motion` / `bluMotion` answer whether a motion was
-    taken; `OccupancyEventRouter` and the Gen1 action hand it to `RuleEngine.motion(room)` inside their chain,
-    so the trace goes on) and the pass of every minute (`@Scheduled` fixedDelay PT1M, initial PT1M, bounded by
+    taken; `OccupancyEventRouter` and the Gen1 action hand it to `RuleEngine.motion(room)`, which **completes at
+    once and reacts on its own** with the caller's context (`deferContextual` + `contextWrite`, so the trace goes
+    on): neither the device queue nor a Shelly Motion's HTTP call waits for the commands or can cancel them; the
+    room is judged `SETTLE` (1 s) after the motion, so the lux of a BLU Motion's own packet - a second component,
+    published after the motion - counts) and the pass of every minute (`@Scheduled` fixedDelay PT1M, initial PT1M, bounded by
     50 s, everything inside `Mono.defer`), which reads the rules again into `RuleBook`. **`RuleBook` is the
     engine's copy of the rules**: every write of `RoomRuleService` puts its answer there at once, a pass that
     read before a write may bring the old rule back for a minute.
@@ -207,14 +210,14 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
     The reads answer it as `heldUntil` while it lasts (by the `RuleBook`; left out with no rule).
   - **Once**: a light the engine sent a command to gets no other until it reports a change (`changedAt` after the
     command) - a failed or unconfirmed command is not repeated every minute; the memory of it is lost with a
-    restart. The decision and the note of its commands are taken together (one lock), so a motion and the pass
+    restart. A pass cut off by its 50 s leaves the lights it never got to unmarked (the one in flight stays). The decision and the note of its commands are taken together (one lock), so a motion and the pass
     never both command a light.
   - **Auto-off**: lights known on and not held, `autoOffDelayMinutes` after the room is empty - with a presence
     sensor from its `since` (or a later motion), with motion sensors only from the last motion. A presence
     sensor not known, a motion sensor not reachable, or no motion since the start: the room is skipped and named
     once an hour (INFO).
-  - **Motion-on**: a motion at most 2 min old (`FRESH_MOTION` - a gateway read after a start brings the last
-    motion it heard), lux below `onlyBelowLux` (**a lux not known never holds**), the period of the moment (none:
+  - **Motion-on**: a motion at most 2 min old (`FRESH_MOTION` - a gateway republishes its last motion when it
+    reconnects; a BLU motion is stamped by the gateway's clock, so a gateway more than 2 min behind lights nothing), lux below `onlyBelowLux` (**a lux not known never holds**), the period of the moment (none:
     nothing); every light not on and not held gets a colour (rgbw and a coloured period), a brightness (one that
     dims) or on. **Motion-off**: `motionOffAfterMinutes` after the last motion, only the lights whose source is
     `rule`, unless a presence sensor of the room says somebody is there or is not known.
