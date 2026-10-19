@@ -2,6 +2,7 @@ package cloud.cholewa.light.occupancy;
 
 import cloud.cholewa.home.model.DeviceEvent;
 import cloud.cholewa.home.model.EatonRxEvent;
+import cloud.cholewa.light.rule.RuleEngine;
 import cloud.cholewa.shelly.codec.ShellyEvent;
 import cloud.cholewa.shelly.codec.ShellyMqttDecoder;
 import cloud.cholewa.shelly.codec.ShellyTopic;
@@ -24,6 +25,7 @@ import java.util.Optional;
 //  <deviceId>.status.illuminance:0 its light in a word; <deviceId>.online its place on the broker
 //- <gatewayId>.status.bthomesensor:<id> of a component OccupancyReads mapped to a BLU Motion: motion or lux,
 //  {id, value, last_updated_ts}
+//A motion is handed to the rules of its room (HAS-262) before the event is done - the engine never fails.
 //A body that is not what its topic carries is an error for the consumer to log
 @Component
 @RequiredArgsConstructor
@@ -37,6 +39,7 @@ public class OccupancyEventRouter {
     private final OccupancyRegistry occupancyRegistry;
     private final OccupancyTracker occupancyTracker;
     private final OccupancyReads occupancyReads;
+    private final RuleEngine ruleEngine;
     private final ShellyMqttDecoder shellyMqttDecoder;
     private final JsonMapper jsonMapper;
 
@@ -67,7 +70,9 @@ public class OccupancyEventRouter {
 
         return Mono.fromCallable(() -> jsonMapper.readValue(body, DeviceEvent.class))
             .filter(event -> event.getEvent() == EatonRxEvent.SWITCH_ON || event.getEvent() == EatonRxEvent.SWITCH_OFF)
-            .doOnNext(event -> occupancyTracker.motion(sensor, event.getEvent() == EatonRxEvent.SWITCH_ON))
+            .flatMap(event -> occupancyTracker.motion(sensor, event.getEvent() == EatonRxEvent.SWITCH_ON)
+                ? ruleEngine.motion(sensor.room())
+                : Mono.empty())
             .then();
     }
 
@@ -76,7 +81,9 @@ public class OccupancyEventRouter {
             return occupancyReads.targetOf(topic.deviceId(), topic.index())
                 .map(target -> decode(topic, body)
                     .flatMap(status -> Mono.justOrEmpty(status.as(BthomeSensorStatus.class)))
-                    .doOnNext(status -> occupancyReads.observe(target, status))
+                    .flatMap(status -> occupancyReads.observe(target, status)
+                        ? ruleEngine.motion(target.sensor().room())
+                        : Mono.empty())
                     .then())
                 .orElseGet(Mono::empty);
         }

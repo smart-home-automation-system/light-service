@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 //What the sensors of the occupancy said (HAS-260), in memory, and what a room makes of it. Nothing is
 //stored: after a start every room is unknown - never empty - until its sensors speak, and no rule may act
@@ -113,8 +114,12 @@ public class OccupancyTracker {
         });
     }
 
-    /** A motion sensor that reports at once - a Shelly Motion by its action, a PIR of the AMX system. */
-    public void motion(final OccupancySensor sensor, final boolean motion) {
+    /**
+     * A motion sensor that reports at once - a Shelly Motion by its action, a PIR of the AMX system.
+     *
+     * @return whether it was a motion - for the rules of the room (HAS-262)
+     */
+    public boolean motion(final OccupancySensor sensor, final boolean motion) {
         final LocalDateTime now = now();
         readings.compute(sensor.id(), (id, held) -> {
             final Reading old = held == null ? Reading.NONE : held;
@@ -124,6 +129,7 @@ public class OccupancyTracker {
             return new Reading(old.occupied(), old.online(), old.illumination(), old.illuminationAt(), old.lux(), old.luxAt(),
                 motion ? now : old.lastMotionAt(), old.motionHeardAt(), old.luxHeardAt(), now, old.confirmedAt());
         });
+        return motion;
     }
 
     /**
@@ -131,20 +137,25 @@ public class OccupancyTracker {
      * component; null when the gateway did not say). A report heard earlier than one already taken changes
      * nothing - a read of a gateway may bring an older state than a publish a moment before it - but the
      * gateway stood for the sensor all the same.
+     *
+     * @return whether a motion was taken - for the rules of the room (HAS-262), which judge how fresh it is
      */
-    public void bluMotion(final OccupancySensor sensor, final Boolean motion, final Instant heardAt) {
+    public boolean bluMotion(final OccupancySensor sensor, final Boolean motion, final Instant heardAt) {
         final LocalDateTime now = now();
+        final AtomicBoolean taken = new AtomicBoolean();
         readings.compute(sensor.id(), (id, held) -> {
             final Reading old = held == null ? Reading.NONE : held;
             final boolean newer = heardAt == null || old.motionHeardAt() == null || heardAt.isAfter(old.motionHeardAt());
             if (motion == null || !newer) {
                 return confirmed(old, now);
             }
+            taken.set(motion);
             final LocalDateTime at = heardAt == null ? now : at(heardAt);
             return new Reading(old.occupied(), old.online(), old.illumination(), old.illuminationAt(), old.lux(), old.luxAt(),
                 motion ? at : old.lastMotionAt(), heardAt == null ? old.motionHeardAt() : heardAt, old.luxHeardAt(),
                 now, now);
         });
+        return taken.get();
     }
 
     /** The illuminance a gateway heard of a BLU Motion, by the same rule of the later report. */

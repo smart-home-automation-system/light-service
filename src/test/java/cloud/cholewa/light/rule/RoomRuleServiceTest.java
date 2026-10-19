@@ -2,8 +2,11 @@ package cloud.cholewa.light.rule;
 
 import cloud.cholewa.home.model.RoomName;
 import cloud.cholewa.light.database.model.MotionPeriodEntity;
+import cloud.cholewa.light.database.model.RuleRunEntity;
 import cloud.cholewa.light.database.repository.MotionPeriodRepository;
 import cloud.cholewa.light.database.repository.RoomRuleRepository;
+import cloud.cholewa.light.database.repository.RuleRunRepository;
+import cloud.cholewa.light.model.rule.RuleRun;
 import cloud.cholewa.light.error.LightError;
 import cloud.cholewa.light.error.LightException;
 import cloud.cholewa.light.model.rule.MotionPeriod;
@@ -28,6 +31,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
@@ -51,13 +55,13 @@ import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
-//The rules on the tables of V2, in a PostgreSQL of Testcontainers like LightStateRepositoryTest (the
+//The rules on the tables of V2 and the log of V3 (HAS-262), in a PostgreSQL of Testcontainers like LightStateRepositoryTest (the
 //upsert is PostgreSQL's own): what is stored is what is read back, a write that fails leaves the rule
 //as it was, the switch of the resident survives the administrator. Without a Docker it fails
 @DataR2dbcTest
 @Testcontainers
 @ActiveProfiles("test")
-@Import({RoomRuleService.class, RoomRuleServiceTest.MovableClock.class})
+@Import({RoomRuleService.class, RuleBook.class, RoomRuleServiceTest.MovableClock.class})
 class RoomRuleServiceTest {
 
     private static final ZoneId HOUSE = ZoneId.of("Europe/Warsaw");
@@ -74,6 +78,12 @@ class RoomRuleServiceTest {
 
     @Autowired
     private RoomRuleRepository ruleRepository;
+
+    @Autowired
+    private RuleRunRepository runRepository;
+
+    @Autowired
+    private RuleBook ruleBook;
 
     @MockitoSpyBean
     private MotionPeriodRepository periodRepository;
@@ -108,6 +118,7 @@ class RoomRuleServiceTest {
         when(occupancyRegistry.loaded()).thenReturn(true);
         when(occupancyRegistry.sensors()).thenReturn(SENSORS);
         ruleRepository.deleteAll().as(StepVerifier::create).verifyComplete();
+        runRepository.deleteAll().as(StepVerifier::create).verifyComplete();
     }
 
     //the periods by the time they start, whatever the order they were given in
@@ -241,6 +252,59 @@ class RoomRuleServiceTest {
         sut.switchByResident(RoomName.BEDROOM, false).as(StepVerifier::create)
             .assertNext(rule -> assertThat(rule.updatedAt()).isEqualTo(EVENING_AS_STORED.plusMinutes(1)))
             .verifyComplete();
+    }
+
+    //every write goes into the RuleBook of the engine at once, a removal takes the rule out (HAS-262)
+    @Test
+    void should_keep_the_rule_book_with_every_write() {
+        final RoomRule written = sut.replace(RoomName.BEDROOM, bedroomAutoOff()).block();
+        assertThat(ruleBook.rule(RoomName.BEDROOM)).isEqualTo(written);
+
+        final RoomRule switched = sut.switchByResident(RoomName.BEDROOM, false).block();
+        assertThat(ruleBook.rule(RoomName.BEDROOM)).isEqualTo(switched);
+
+        sut.remove(RoomName.BEDROOM).as(StepVerifier::create).verifyComplete();
+        assertThat(ruleBook.rule(RoomName.BEDROOM)).isNull();
+    }
+
+    @Test
+    void should_answer_every_rule_by_its_room() {
+        sut.replace(RoomName.BEDROOM, bedroomAutoOff()).block();
+        sut.replace(RoomName.HALL_UP, hallMotion()).block();
+
+        sut.byRoom().as(StepVerifier::create)
+            .assertNext(rules -> assertThat(rules).containsOnlyKeys(RoomName.BEDROOM, RoomName.HALL_UP))
+            .verifyComplete();
+    }
+
+    //the runs of a room from included to not, in the order they were sent; another room's are not its
+    @Test
+    void should_answer_the_runs_of_a_room_in_a_span() {
+        final LocalDateTime evening = LocalDateTime.of(2026, 10, 19, 20, 0);
+        Flux.just(
+                new RuleRunEntity(null, "HALL_UP", 120, "on", "motion-on", null, evening.minusSeconds(1)),
+                new RuleRunEntity(null, "HALL_UP", 120, "on", "motion-on", null, evening),
+                new RuleRunEntity(null, "HALL_UP", 120, "off", "motion-off", "DEVICE_FAILED", evening.plusMinutes(4)),
+                new RuleRunEntity(null, "BEDROOM", 31, "off", "auto-off", null, evening.plusMinutes(5)),
+                new RuleRunEntity(null, "HALL_UP", 120, "on", "motion-on", null, evening.plusHours(1)))
+            .concatMap(runRepository::save)
+            .then()
+            .as(StepVerifier::create)
+            .verifyComplete();
+
+        sut.runs(RoomName.HALL_UP, evening, evening.plusHours(1)).as(StepVerifier::create)
+            .expectNext(List.of(
+                new RuleRun(120, "on", "motion-on", null, evening),
+                new RuleRun(120, "off", "motion-off", "DEVICE_FAILED", evening.plusMinutes(4))))
+            .verifyComplete();
+    }
+
+    @Test
+    void should_refuse_an_action_the_log_does_not_know_in_the_table() {
+        runRepository.save(new RuleRunEntity(null, "HALL_UP", 120, "toggle", "motion-on", null, LocalDateTime.of(2026, 10, 19, 20, 0)))
+            .as(StepVerifier::create)
+            .expectError(DataIntegrityViolationException.class)
+            .verify();
     }
 
     //the table keeps what one row can say even past the service

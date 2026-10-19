@@ -144,14 +144,18 @@ public class OccupancyReads {
         components.putAll(found);
     }
 
-    /** A status of a BLU component, published or read: a truth is motion, a number is lux, anything else confirms. */
-    public void observe(final Target target, final BthomeSensorStatus status) {
+    /**
+     * A status of a BLU component, published or read: a truth is motion, a number is lux, anything else confirms.
+     *
+     * @return whether a motion was taken
+     */
+    public boolean observe(final Target target, final BthomeSensorStatus status) {
         final Instant heardAt = status.getLastUpdatedTs() == null ? null : Instant.ofEpochSecond(status.getLastUpdatedTs());
         if (target.motion()) {
-            occupancyTracker.bluMotion(target.sensor(), status.getValue() instanceof Boolean motion ? motion : null, heardAt);
-        } else {
-            occupancyTracker.bluLux(target.sensor(), status.getValue() instanceof Number lux ? lux.doubleValue() : null, heardAt);
+            return occupancyTracker.bluMotion(target.sensor(), status.getValue() instanceof Boolean motion ? motion : null, heardAt);
         }
+        occupancyTracker.bluLux(target.sensor(), status.getValue() instanceof Number lux ? lux.doubleValue() : null, heardAt);
+        return false;
     }
 
     private Mono<Void> readPresence(final OccupancySensor sensor) {

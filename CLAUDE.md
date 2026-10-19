@@ -8,7 +8,9 @@ since HAS-259 it tracks the real state of every light from what the devices repo
 (`GET /home/light`, `/rooms/{room}`, `/{id}`); since HAS-260 it knows from the presence and motion
 sensors whether a room is occupied, when it last saw motion and how light it is (`GET
 /home/light/rooms/{room}/occupancy`, and the same object inside the room read); since HAS-261 it stores
-the rules of each room (`/home/light/rules`, `/rooms/{room}/rules`), which the engine (HAS-262) will run.
+the rules of each room (`/home/light/rules`, `/rooms/{room}/rules`); since HAS-262 the engine runs them -
+auto-off, motion-on, motion-off and the manual hold - and logs every command it sends
+(`GET /home/light/rooms/{room}/rules/runs`).
 
 Part of the smart-home-automation-system organization — org-wide conventions, the
 repository map and working rules come from the workspace-level context
@@ -29,8 +31,8 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
 - Database: own database `home-automation-light`, pool `database.pool.max-size: 2` (heating 2 /
   database 4 / water 2 / presence 2 / blinds 2 / weather 2 / light 2 = 16 of 22), pinned by
   `LightServiceApplicationTest`. Tables: `light_state` (`V1`, HAS-259), `light_room_rule` and
-  `light_motion_period` (`V2`, HAS-261) - the Jira texts count one higher. **The next migration is `V3`**
-  (HAS-262 says `V4`).
+  `light_motion_period` (`V2`, HAS-261), `light_rule_run` (`V3`, HAS-262 - its Jira text says `V4`) - the Jira
+  texts count one higher. **The next migration is `V4`**.
 - Integrates with hardware: the Eaton lights through `amx-service`, the Shelly lights over HTTP
   (commands) and MQTT (status topics) - from HAS-258 on.
 
@@ -38,7 +40,7 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
 
 - Build + tests: `mvn verify` **needs a running Docker** since HAS-259: `LightStateRepositoryTest`
   runs the `DISTINCT ON` and the `touchLatest` of the state, `RoomRuleServiceTest` the upsert of the
-  rules, on a Testcontainers PostgreSQL (`@DataR2dbcTest`, migrations applied by hand). Without Docker it fails, it is not skipped.
+  rules and the log of the runs, on a Testcontainers PostgreSQL (`@DataR2dbcTest`, migrations applied by hand). Without Docker it fails, it is not skipped.
 - Local run: `home,local` Spring profiles, port `6012` (Actuator `8012`); in-cluster port
   `6200`, Actuator `8200`. Locally the broker is `localhost`, the services are on 6005 / 6001 /
   6009, and the broker passwords default to a dummy. The overall health is `DOWN` without a
@@ -115,7 +117,7 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
 - **The reads leave out what is not known** (`LightView`, `NON_NULL`): nothing before the first
   report, no brightness of a relay, no `reachable` after a restart; a room's `anyOn` is left out
   while a light of it is unknown. A room read carries `occupancy` (HAS-260, below).
-- **One instance, `Recreate`, never scaled**: the rules engine will live in its memory.
+- **One instance, `Recreate`, never scaled**: the rules engine lives in its memory.
   `@EnableScheduling` is in `SchedulingConfig` under `@Profile("!test")`.
 - **The test document points everything outward at port 1** (broker, database, the three
   services; `ApplicationYamlTest`): a context test must never switch a real light. A new
@@ -191,3 +193,33 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
   - **Only the writes are the transaction** (`write()`): the registry may be read over HTTP before,
     and a connection held meanwhile would be half of the pool.
   - `"r,g,b"` of a colour is `RgbColumn`, shared with the state.
+- **The rules engine** (HAS-262), `RuleEngine` around the pure `RuleEvaluator` (pinned by `RuleEvaluatorTest`,
+  no I/O) - it never fights a person and never acts on a room it cannot judge:
+  - **Two triggers**: a fresh motion (`OccupancyTracker.motion` / `bluMotion` answer whether a motion was
+    taken; `OccupancyEventRouter` and the Gen1 action hand it to `RuleEngine.motion(room)` inside their chain,
+    so the trace goes on) and the pass of every minute (`@Scheduled` fixedDelay PT1M, initial PT1M, bounded by
+    50 s, everything inside `Mono.defer`), which reads the rules again into `RuleBook`. **`RuleBook` is the
+    engine's copy of the rules**: every write of `RoomRuleService` puts its answer there at once, a pass that
+    read before a write may bring the old rule back for a minute.
+  - **The manual hold is derived from the state, not stored**: a light whose last change has a source other
+    than `rule` / `empty-house` (a wall switch, the Shelly app, an AMX panel, the dashboard, `external`) is held
+    for the room's `manualHoldMinutes` from its `changedAt` - so it survives a restart with `light_state`.
+    The reads answer it as `heldUntil` while it lasts (by the `RuleBook`; left out with no rule).
+  - **Once**: a light the engine sent a command to gets no other until it reports a change (`changedAt` after the
+    command) - a failed or unconfirmed command is not repeated every minute; the memory of it is lost with a
+    restart. The decision and the note of its commands are taken together (one lock), so a motion and the pass
+    never both command a light.
+  - **Auto-off**: lights known on and not held, `autoOffDelayMinutes` after the room is empty - with a presence
+    sensor from its `since` (or a later motion), with motion sensors only from the last motion. A presence
+    sensor not known, a motion sensor not reachable, or no motion since the start: the room is skipped and named
+    once an hour (INFO).
+  - **Motion-on**: a motion at most 2 min old (`FRESH_MOTION` - a gateway read after a start brings the last
+    motion it heard), lux below `onlyBelowLux` (**a lux not known never holds**), the period of the moment (none:
+    nothing); every light not on and not held gets a colour (rgbw and a coloured period), a brightness (one that
+    dims) or on. **Motion-off**: `motionOffAfterMinutes` after the last motion, only the lights whose source is
+    `rule`, unless a presence sensor of the room says somebody is there or is not known.
+  - **`light_rule_run`** (V3) logs every command with its outcome (`error` = the `LightError` code); a log that
+    cannot be written is a WARN. `GET /rooms/{room}/rules/runs?from=&to=` (ISO date-times, from included, to
+    not, at most 7 days, any room - the runs of a removed rule stay). No retention yet.
+  - **The once-guard and the 2-minute command window of `LightStateTracker` meet on a Gen1 light without
+    actions**: a change seen more than 2 min after the rule's command is `external` and starts a hold.
