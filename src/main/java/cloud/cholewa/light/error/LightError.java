@@ -5,7 +5,7 @@ import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 
-//The causes of a command that was not carried out. Their names are the codes of the answer
+//The causes of a command that was not carried out, or of a rule that was not written. Their names are the codes of the answer
 //(ErrorId.codeOf) - wire contract for a caller that branches on them, the dashboard first of all,
 //pinned by LightErrorTest
 @Getter
@@ -17,7 +17,10 @@ public enum LightError implements ErrorId {
     UNSUPPORTED_CAPABILITY("Light cannot take this command"),
     DEVICE_FAILED("Light did not take the command"),
     //the lights are not known yet: database-service could not be read since the start
-    REGISTRY_UNAVAILABLE("Device registry unavailable");
+    REGISTRY_UNAVAILABLE("Device registry unavailable"),
+    //a rule of a room the service will not store: the reason is in details (HAS-261)
+    INVALID_RULE("Invalid room rule"),
+    NOT_FOUND_RULE("Room rule not found");
 
     private final String description;
 }

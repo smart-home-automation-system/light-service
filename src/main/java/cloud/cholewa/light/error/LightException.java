@@ -1,10 +1,11 @@
 package cloud.cholewa.light.error;
 
+import cloud.cholewa.home.model.RoomName;
 import cloud.cholewa.light.model.Light;
 import lombok.Getter;
 import org.springframework.http.HttpStatus;
 
-//A command that was not carried out, or may not have been. The status says whose problem it is,
+//A command that was not carried out, or may not have been, or a rule that was not written. The status says whose problem it is,
 //the error names the cause. The message is for the log; it is answered as details only for a 4xx -
 //for a failed device it quotes the device, and that never goes into an answer
 @Getter
@@ -37,6 +38,20 @@ public class LightException extends RuntimeException {
             LightError.REGISTRY_UNAVAILABLE,
             "the device registry was never read: " + describe(cause)
         );
+    }
+
+    public static LightException invalidRule(final String reason) {
+        return new LightException(HttpStatus.BAD_REQUEST, LightError.INVALID_RULE, reason);
+    }
+
+    public static LightException ruleNotFound(final RoomName room) {
+        return new LightException(HttpStatus.NOT_FOUND, LightError.NOT_FOUND_RULE, "no rule for the room " + room.getValue());
+    }
+
+    //the sensors of a room are needed to judge a rule, and they are the registry's too
+    public static LightException sensorsUnavailable() {
+        return new LightException(HttpStatus.BAD_GATEWAY, LightError.REGISTRY_UNAVAILABLE,
+            "the sensors of the device registry were never read");
     }
 
     public static LightException deviceFailed(final Light light, final Throwable cause) {
