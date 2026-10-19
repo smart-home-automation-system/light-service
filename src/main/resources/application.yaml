@@ -1,0 +1,228 @@
+spring:
+  application:
+    name: light-service
+    version: @project.version@
+  profiles:
+    active: home
+  webflux:
+    base-path: "/home/light"
+  reactor:
+    # default LIMITED restores ThreadLocals only in "tap" and "handle", so traceId would be
+    # missing from the MDC of every log statement inside a reactive chain
+    context-propagation: auto
+  rabbitmq:
+    host: rabbitmq-headless
+    port: 5672
+    # the events of every device: the Shelly devices over MQTT and the Eaton devices from
+    # amx-service, all on amq.topic of /device, each queue bound with "#"
+    username: device
+    # no default on purpose: with one the pod would start, turn Ready and consume nothing.
+    # Without the variable the service does not start - cholewa.required-properties sees to that,
+    # the binder alone would take the placeholder for the password
+    password: ${rabbitmq-password}
+    virtual-host: /device
+    connection-timeout: 10s
+    requested-heartbeat: 10s
+    template:
+      # both default to false; without them the trace breaks at the queue
+      observation-enabled: true
+    listener:
+      simple:
+        observation-enabled: true
+        # the listener returns a Mono; with the default AUTO mode the container acks before the
+        # message is handled, so prefetch throttles nothing and the ack is sent twice
+        acknowledge-mode: manual
+        # how many events are in flight at once, the rest waits in the broker
+        prefetch: 3
+  flyway:
+    url: ${flyway-url:jdbc:postgresql://${database.host}:${database.port}/${database.name}}
+    user: ${database-user:dummyUser}
+    password: ${database-password:dummyPassword}
+    enabled: on
+
+database:
+  host: ${database-host:localhost}
+  port: ${database-port:5432}
+  name: ${database-name:dummyName}
+  username: ${database-user:dummyUser}
+  password: ${database-password:dummyPassword}
+  pool:
+    # this service's share of the 22 backend connections the managed database allows
+    # (heating 2 / database 4 / water 2 / presence 2 / blinds 2 / weather 2 / light 2, 6 free);
+    # left out, the pool silently falls back to the library default of 4. The deployment is
+    # Recreate, so a rollout never holds a second pool - only Flyway opens one more connection
+    # over JDBC
+    max-size: 2
+
+server:
+  port: 6200
+management:
+  server:
+    port: 8200
+  endpoint:
+    health:
+      # a 404 on the readiness path crash-loops the pod, so the probe groups are pinned here
+      # instead of relying on Boot detecting the Kubernetes platform - and kept in the shared
+      # document, where the paths can be exercised locally on 8012 before the manifest ships
+      probes:
+        enabled: true
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  tracing:
+    sampling:
+      # default 0.1; a home system generates so little traffic that sampling everything is free,
+      # and a partially sampled trace is useless when it is the only record of a request
+      probability: 1.0
+
+logbook:
+  format:
+    style: json
+
+logging:
+  structured:
+    format:
+      console: logstash
+  level:
+    org.zalando.logbook: trace
+
+rabbitmq:
+  queue:
+    name: device.prod.light
+
+# the notification exchange is on the same broker as spring.rabbitmq.*, on its own virtual host;
+# it is a headers exchange and "env" is one of the two headers it routes by.
+# This group is the service's own, read by NotificationRabbitConfig for the second connection;
+# cholewa.notification.enabled of cholewa-commons stays unset - the publisher it creates uses the
+# connection of spring.rabbitmq.*, which leads to /device
+notification:
+  virtual-host: /notification
+  username: notification
+  # no default on purpose: with one the pod would start, turn Ready and fail every publish.
+  # Without the variable the service does not start (cholewa.required-properties)
+  password: ${notification-rabbitmq-password}
+  exchange: notification
+  env: prod
+
+# the services this one calls inside the cluster, over k8s DNS. A bare number of a timeout is
+# seconds
+internal:
+  service:
+    # the device registry: which device is a light or a sensor, and where
+    database:
+      url: http://database-service:6200
+      connect-timeout: 3s
+      response-timeout: 5s
+    # the Eaton lights are switched through the frame server of amx-service. 10 s, not 5: amx-service
+    # may read the registry first (2 s connect, 3 s answer) and then wait up to 3 s for the frame
+    # server - a frame sent at 6 s must not be reported here as a failed command
+    amx:
+      url: http://amx-service:6200
+      connect-timeout: 3s
+      response-timeout: 10s
+    # who is at home, for the empty house
+    presence:
+      url: http://presence-service:6200
+      connect-timeout: 3s
+      response-timeout: 5s
+
+# what has no default in this document: a pod without one of them does not start (cholewa-commons,
+# checked before the first bean is created)
+cholewa:
+  required-properties:
+    - property: spring.rabbitmq.password
+      variable: rabbitmq-password
+    - property: notification.password
+      variable: notification-rabbitmq-password
+
+---
+
+spring:
+  config:
+    activate:
+      on-profile: local
+  rabbitmq:
+    host: localhost
+    # a run on a workstation starts without the two variables of the broker; it takes the real
+    # passwords only to consume events or to publish a notification
+    password: ${rabbitmq-password:dummyPassword}
+
+server:
+  port: 6012
+management:
+  server:
+    port: 8012
+
+logbook:
+  format:
+    style: http
+
+logging:
+  structured:
+    format:
+      console: ""
+
+rabbitmq:
+  queue:
+    name: device.dev.light
+
+notification:
+  password: ${notification-rabbitmq-password:dummyPassword}
+  env: dev
+
+internal:
+  service:
+    database:
+      url: http://localhost:6005
+    amx:
+      url: http://localhost:6001
+    presence:
+      url: http://localhost:6009
+
+---
+
+spring:
+  config:
+    activate:
+      on-profile: test
+  # a context test starts the listener and the pool: everything that leads out of the JVM points
+  # at an address nothing listens on, so that a test cannot reach the broker, the database or
+  # another service even where their names resolve - and can never switch a real light
+  rabbitmq:
+    host: localhost
+    port: 1
+    password: dummyPassword
+  flyway:
+    enabled: false
+
+database:
+  host: localhost
+  port: 1
+
+rabbitmq:
+  queue:
+    name: device.test.light
+
+# "test" matches no binding of the exchange: such a message would come back as unroutable
+notification:
+  password: dummyPassword
+  env: test
+
+internal:
+  service:
+    database:
+      url: http://localhost:1
+    amx:
+      url: http://localhost:1
+    presence:
+      url: http://localhost:1
+
+logbook:
+  format:
+    style: http
+
+logging:
+  structured:
+    format:
+      console: ""
