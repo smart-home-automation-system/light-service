@@ -11,7 +11,7 @@ import lombok.NoArgsConstructor;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
-import java.time.temporal.ChronoUnit;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
@@ -154,12 +154,12 @@ public final class SimulationPlanner {
         final List<Spot> stays = of(phase, SpotRole.STAY);
         final List<Spot> paths = of(phase, SpotRole.PATH);
         final int count = between(phase.visitsMin(), phase.visitsMax(), random);
-        //minutes of the wall clock, as every bound of the plan
-        final long slice = ChronoUnit.MINUTES.between(start, end) / count;
+        final long slice = wallClockMinutes(start, end) / count;
+        final long longest = Math.max(1, slice - 2);
 
         for (int visit = 0; visit < count; visit++) {
             //a short phase cuts the stay to its slice, never below a minute
-            final int minutes = (int) Math.max(1L, Math.min((long) between(phase.minStayMinutes(), phase.maxStayMinutes(), random), slice - 2));
+            final int minutes = (int) Math.clamp(between(phase.minStayMinutes(), phase.maxStayMinutes(), random), 1, longest);
             final long room = slice - minutes - 2;
             final LocalDateTime from = start.plusMinutes(visit * slice + 1 + (room > 0 ? random.nextInt((int) room + 1) : 0));
             final LocalDateTime to = earliest(from.plusMinutes(minutes), end);
@@ -178,6 +178,12 @@ public final class SimulationPlanner {
     private static LocalDateTime shifted(final LocalDate date, final LocalTime time, final int jitter, final Random random) {
         final LocalDateTime at = time.isBefore(NOON) ? date.plusDays(1).atTime(time) : date.atTime(time);
         return at.plusMinutes(jitter == 0 ? 0 : random.nextInt(2 * jitter + 1) - jitter);
+    }
+
+    //The minutes between two times of the wall clock, as every bound of the plan is: the night of a change of
+    //the clock is planned in the time on the clocks of the house, not in elapsed minutes
+    static long wallClockMinutes(final LocalDateTime from, final LocalDateTime to) {
+        return (to.toEpochSecond(ZoneOffset.UTC) - from.toEpochSecond(ZoneOffset.UTC)) / 60;
     }
 
     private static List<Spot> of(final PhasePlan phase, final SpotRole role) {
