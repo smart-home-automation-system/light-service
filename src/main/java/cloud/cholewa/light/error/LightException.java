@@ -44,6 +44,10 @@ public class LightException extends RuntimeException {
         return new LightException(HttpStatus.BAD_REQUEST, LightError.INVALID_RULE, reason);
     }
 
+    public static LightException invalidPlan(final String reason) {
+        return new LightException(HttpStatus.BAD_REQUEST, LightError.INVALID_PLAN, reason);
+    }
+
     public static LightException ruleNotFound(final RoomName room) {
         return new LightException(HttpStatus.NOT_FOUND, LightError.NOT_FOUND_RULE, "no rule for the room " + room.getValue());
     }

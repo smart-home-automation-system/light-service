@@ -20,7 +20,9 @@ public enum LightError implements ErrorId {
     REGISTRY_UNAVAILABLE("Device registry unavailable"),
     //a rule of a room the service will not store: the reason is in details (HAS-261)
     INVALID_RULE("Invalid room rule"),
-    NOT_FOUND_RULE("Room rule not found");
+    NOT_FOUND_RULE("Room rule not found"),
+    //a plan of the presence simulation the service will not store: the reason is in details (HAS-263)
+    INVALID_PLAN("Invalid presence simulation plan");
 
     private final String description;
 }

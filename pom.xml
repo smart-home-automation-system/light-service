@@ -50,6 +50,9 @@
 		<smart-home-sdk.version>1.12.0</smart-home-sdk.version>
 		<shelly-client.version>2.1.0</shelly-client.version>
 
+		<!--  external libraries-->
+		<commons-suncalc.version>3.11</commons-suncalc.version>
+
 		<!--  plugins versions-->
 		<maven-enforcer-plugin.version>3.6.3</maven-enforcer-plugin.version>
 		<maven-surefire-plugin.version>3.5.6</maven-surefire-plugin.version>
@@ -73,6 +76,13 @@
 			<groupId>cloud.cholewa</groupId>
 			<artifactId>shelly-client</artifactId>
 			<version>${shelly-client.version}</version>
+		</dependency>
+
+		<!--  the sunrise and the dusk of the presence simulation (HAS-263), as in blinds-service-->
+		<dependency>
+			<groupId>org.shredzone.commons</groupId>
+			<artifactId>commons-suncalc</artifactId>
+			<version>${commons-suncalc.version}</version>
 		</dependency>
 
 		<dependency>

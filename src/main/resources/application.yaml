@@ -101,6 +101,16 @@ light:
     # how long a BLU Motion counts as reachable without its gateway confirming it (HAS-260); the
     # gateways are read every 5 min, so 10 min to 24 h - the bound of the window sensors of blinds-service
     gateway-silent-after: PT30M
+  # the empty house (HAS-263): how long nobody is at home before the service acts - the lights left on
+  # by day, the presence simulation by night; enabled false keeps it from acting, it is still watched
+  empty-house:
+    enabled: true
+    after: PT10M
+  # where the house is, for the sunrise and the dusk of the presence simulation. No default on purpose:
+  # a private fact, the manifest gives it (as for blinds-service); without it the service does not start
+  location:
+    latitude: ${location-latitude}
+    longitude: ${location-longitude}
 
 # the notification exchange is on the same broker as spring.rabbitmq.*, on its own virtual host;
 # it is a headers exchange and "env" is one of the two headers it routes by.
@@ -146,6 +156,10 @@ cholewa:
       variable: rabbitmq-password
     - property: notification.password
       variable: notification-rabbitmq-password
+    - property: light.location.latitude
+      variable: location-latitude
+    - property: light.location.longitude
+      variable: location-longitude
 
 ---
 
@@ -181,6 +195,12 @@ rabbitmq:
 notification:
   password: ${notification-rabbitmq-password:dummyPassword}
   env: dev
+
+# a place in Poland, not the house - a local run needs no private fact
+light:
+  location:
+    latitude: ${location-latitude:50.0}
+    longitude: ${location-longitude:20.0}
 
 internal:
   service:
@@ -219,6 +239,12 @@ rabbitmq:
 notification:
   password: dummyPassword
   env: test
+
+# a place in Poland, not the house
+light:
+  location:
+    latitude: 50.0
+    longitude: 20.0
 
 internal:
   service:
