@@ -96,6 +96,12 @@ rabbitmq:
   queue:
     name: device.prod.light
 
+light:
+  occupancy:
+    # how long a BLU Motion counts as reachable without its gateway confirming it (HAS-260); the
+    # gateways are read every 5 min, so 10 min to 24 h - the bound of the window sensors of blinds-service
+    gateway-silent-after: PT30M
+
 # the notification exchange is on the same broker as spring.rabbitmq.*, on its own virtual host;
 # it is a headers exchange and "env" is one of the two headers it routes by.
 # This group is the service's own, read by NotificationRabbitConfig for the second connection;

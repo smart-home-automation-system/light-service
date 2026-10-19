@@ -1,5 +1,6 @@
 package cloud.cholewa.light.rabbit;
 
+import cloud.cholewa.light.occupancy.OccupancyEventRouter;
 import cloud.cholewa.light.state.LightEventRouter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -11,30 +12,37 @@ import reactor.core.publisher.Mono;
 //Every event of every device arrives here - the queue is bound with "#", about 130 a minute: the
 //status topics of the Shelly devices (routing key "<id>.status.<component>", the body as the
 //device sent it) and the DeviceEvent of the Eaton devices from amx-service ("eaton.<gateway>.<point>").
-//LightEventRouter picks the events of the lights by the routing key and the registry. Each one is
-//logged at DEBUG only - at INFO the volume alone would drown the log
+//LightEventRouter picks the events of the lights by the routing key and the registry, OccupancyEventRouter
+//those of the sensors of the occupancy (HAS-260) - each with its own error handling, so an event one of
+//them cannot read still reaches the other. Each one is logged at DEBUG only - at INFO the volume alone
+//would drown the log
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class DeviceEventConsumer {
 
     private final LightEventRouter lightEventRouter;
+    private final OccupancyEventRouter occupancyEventRouter;
 
     @RabbitListener(queues = "${rabbitmq.queue.name}")
     Mono<Void> consume(final Message message) {
         final String routingKey = message.getMessageProperties().getReceivedRoutingKey();
 
         return Mono.fromRunnable(() -> log.debug("Device event received with routing key: {}", routingKey))
-            .then(Mono.defer(() -> lightEventRouter.route(routingKey, message.getBody())))
-            //an event that cannot be handled is logged and acknowledged: a Mono that errors is
-            //redelivered at once, which for a message that fails the same way is a tight loop
-            .onErrorResume(throwable -> {
-                log.error("Error while consuming the device event {}", routingKey, throwable);
-                return Mono.empty();
-            })
+            .then(Mono.defer(() -> lightEventRouter.route(routingKey, message.getBody()))
+                .onErrorResume(throwable -> failed(routingKey, "a light", throwable)))
+            .then(Mono.defer(() -> occupancyEventRouter.route(routingKey, message.getBody()))
+                .onErrorResume(throwable -> failed(routingKey, "a sensor of the occupancy", throwable)))
             //the listener observation lives in a ThreadLocal, but the container subscribes in a way that
             //does not trigger the automatic capture, so the reactor context stays empty and traceId is
             //lost on the first thread switch; this captures it at subscribe, where it is still present
             .contextCapture();
+    }
+
+    //an event that cannot be handled is logged and acknowledged: a Mono that errors is redelivered at once,
+    //which for a message that fails the same way is a tight loop
+    private static Mono<Void> failed(final String routingKey, final String reader, final Throwable throwable) {
+        log.error("Error while consuming the device event {} as {}", routingKey, reader, throwable);
+        return Mono.empty();
     }
 }
