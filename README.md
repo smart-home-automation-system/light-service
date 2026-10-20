@@ -38,7 +38,8 @@ is; since HAS-261 it stores the rules of each room, which the administrator writ
 switches off; since HAS-262 the engine runs them - auto-off, motion-on and motion-off, never against a
 person and never in a room it cannot judge - and logs every command it sends; since HAS-263 it acts on an
 empty house - the lights left on by day are switched off, by night a presence simulation makes the house
-look lived in.
+look lived in; since HAS-264 it tells the household when a Shelly light stops answering or a sensor falls
+silent.
 
 Everything is non-blocking (Spring WebFlux / Reactor):
 
@@ -293,6 +294,21 @@ restart picks up), another night differs. `INVALID_PLAN` names the first rule br
 `dusk` and `sunrise` of the night, and by night `phase`, `lit` (what the simulation lights now - a preview,
 also while somebody is at home) and `nextChangeAt`. What is not known is left out.
 
+# The availability monitor
+
+Every minute the service checks what it depends on and tells the household on Discord (`/notification`):
+
+| Watched | Out when | Not watched |
+|---|---|---|
+| Shelly lights | unreachable for `light.monitor.offline-after` (5 min) - a Gen1 light by failed polls of `/status`, a Gen2+ light by its MQTT last will, or a failed reconciliation while MQTT said nothing since the start | Eaton lights |
+| presence sensors | silent for `light.monitor.sensor-silent-after` (30 min) | |
+| battery motion sensors (BLU Motion, Shelly Motion) | silent for `light.monitor.battery-silent-after` (24 h) - they send only when they sense something | the PIRs of the AMX system (they report only after dark) |
+
+One alert per pass names every device newly out (ten by name, the rest counted), a reminder follows every
+`light.monitor.reminder-every` (1 h) while it lasts, and one info when it is back. The open alerts are kept in
+the database, so a restart neither repeats an alert nor announces a return it has not seen; a device removed
+from the registry while out is forgotten without a word. Nothing is judged before the registry was read once.
+
 # Database
 
 - **Own database** `home-automation-light` on the managed PostgreSQL, reactive access via
@@ -307,3 +323,5 @@ also while somebody is at home) and `nextChangeAt`. What is not known is left ou
   `reason`, `error`, `at`; the runs of a removed rule stay.
 - `light_simulation_phase` and `light_simulation_spot` (`V4`, HAS-263): the plan of the presence
   simulation - one row per phase, its spots in the order written, gone with it.
+- `light_availability_alert` (`V5`, HAS-264): the open alerts of the availability monitor - one row per
+  device the household was told is out and not yet told is back.
