@@ -33,7 +33,9 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.IntStream;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -92,6 +94,8 @@ class AvailabilityMonitorTest {
         monitor = new AvailabilityMonitor(lightRegistry, lightStateTracker, occupancyRegistry, occupancyTracker, alertRepository,
             entityTemplate, notificationPublisher, new MonitorProperties(Duration.ofMinutes(5), Duration.ofHours(1),
             Duration.ofMinutes(30), Duration.ofHours(24)), clock);
+        when(lightRegistry.loaded()).thenReturn(true);
+        when(occupancyRegistry.loaded()).thenReturn(true);
         when(lightRegistry.current()).thenReturn(List.of(TOBI_MAIN, LIVIA_DESK, STAIRS));
         when(lightStateTracker.status(anyLong())).thenReturn(Mono.just(reachable(true)));
         when(occupancyRegistry.sensors()).thenReturn(List.of(PRESENCE, PIR));
@@ -197,6 +201,46 @@ class AvailabilityMonitorTest {
         verify(notificationPublisher).publishAlert(
             "Not available: the presence sensor Presence (livia, 92) is silent since 2026-10-20 12:00 (30 min).");
         verify(occupancyTracker, never()).room(RoomName.STAIRS);
+    }
+
+    //a start while database-service is away: nothing is judged, no alert forgotten
+    @Test
+    void should_judge_nothing_before_both_registries_were_read() {
+        when(lightRegistry.loaded()).thenReturn(false);
+        when(lightRegistry.current()).thenReturn(List.of());
+        when(alertRepository.findAll()).thenReturn(Flux.just(new AvailabilityAlertEntity(110L, "light", "Main", "tobi",
+            START.minusHours(1), START.minusMinutes(30))));
+
+        check();
+
+        verify(alertRepository, never()).deleteById(anyLong());
+        verify(notificationPublisher, never()).publishInfo(anyString());
+    }
+
+    //removed from the registry while out: the alert closed without a word
+    @Test
+    void should_close_the_alert_of_a_device_no_longer_watched_without_a_word() {
+        when(alertRepository.findAll()).thenReturn(Flux.just(new AvailabilityAlertEntity(999L, "light", "Gone", "loft",
+            START.minusHours(1), START.minusMinutes(30))));
+
+        check();
+
+        verify(alertRepository).deleteById(999L);
+        verify(notificationPublisher, never()).publishInfo(anyString());
+    }
+
+    //a Wi-Fi outage: ten devices by name, the rest counted
+    @Test
+    void should_name_at_most_ten_devices_in_one_message() {
+        final List<AvailabilityEvaluator.Alert> alerts = IntStream.range(0, 12)
+            .mapToObj(i -> new AvailabilityEvaluator.Alert(200 + i, AvailabilityEvaluator.Kind.LIGHT, "L" + i, "loft",
+                START, START))
+            .toList();
+
+        assertThat(monitor.alertText(alerts, START.plusMinutes(5)))
+            .contains("the light L9 (loft, 209)")
+            .doesNotContain("L10 ")
+            .endsWith("; and 2 more.");
     }
 
     @Test

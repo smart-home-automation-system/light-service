@@ -56,6 +56,7 @@ import java.util.stream.Stream;
 public class AvailabilityMonitor {
 
     static final Duration PUBLISH_TIMEOUT = Duration.ofSeconds(30);
+    static final int MAX_LISTED = 10;
     private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
 
     private final LightRegistry lightRegistry;
@@ -100,6 +101,10 @@ public class AvailabilityMonitor {
     @Scheduled(initialDelayString = "PT2M", fixedDelayString = "PT1M")
     Mono<Void> check() {
         return Mono.defer(() -> {
+                //before both registries were read every device would look removed, and its alert be forgotten
+                if (!lightRegistry.loaded() || !occupancyRegistry.loaded()) {
+                    return Mono.empty();
+                }
                 final LocalDateTime now = now();
                 return lights(now)
                     .map(lights -> Stream.concat(lights.stream(), sensors().stream()).toList())
@@ -209,8 +214,11 @@ public class AvailabilityMonitor {
         return alert.kind() == Kind.LIGHT ? " does not answer" : " is silent";
     }
 
+    //at most MAX_LISTED devices by name, the rest counted: a Discord embed holds 4096 characters, and a Wi-Fi
+    //outage takes thirty devices at once
     private static String list(final List<Alert> alerts, final Function<Alert, String> line) {
-        return alerts.stream().map(line).collect(Collectors.joining("; "));
+        final String listed = alerts.stream().limit(MAX_LISTED).map(line).collect(Collectors.joining("; "));
+        return alerts.size() > MAX_LISTED ? listed + "; and " + (alerts.size() - MAX_LISTED) + " more" : listed;
     }
 
     private String time(final LocalDateTime time) {
@@ -229,7 +237,10 @@ public class AvailabilityMonitor {
         final Kind kind = Stream.of(Kind.values())
             .filter(candidate -> candidate.value().equals(row.kind()))
             .findFirst()
-            .orElse(Kind.LIGHT);
+            .orElseGet(() -> {
+                log.warn("Availability alert of device {} has a kind this version does not know: {}", row.deviceId(), row.kind());
+                return Kind.LIGHT;
+            });
         return new Alert(row.deviceId(), kind, row.name(), row.room(), row.since(), row.lastAlertAt());
     }
 

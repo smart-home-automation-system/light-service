@@ -52,6 +52,11 @@ public class LightRegistry {
     //The list as last read, empty until the first read succeeded - never a read of its own. For the
     //device events and the polls: a lookup per event would read the registry 130 times a minute
     //while database-service is away
+    /** Whether the registry was read once: before it an empty list is no answer. */
+    public boolean loaded() {
+        return lights.get() != null;
+    }
+
     public List<Light> current() {
         final List<Light> list = lights.get();
         return list == null ? List.of() : list;
