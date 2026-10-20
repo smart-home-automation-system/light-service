@@ -64,12 +64,18 @@ Everything is non-blocking (Spring WebFlux / Reactor):
   |---|---|---|
   | Shelly Gen2+ | its MQTT status (`switch`, `light`, `rgb` / `rgbw`) at once; `GetStatus` every 5 minutes reconciles | its `online` topic |
   | Shelly Gen1 | `/status` every 60 s; `GET /events/gen1` when the device calls it (its `out_on_url` / `out_off_url`) | a poll that fails |
-  | Eaton | the `status` event of `amx-service` (a switch on or off, a dimmer its level); every Eaton light is asked once after the start | - |
+  | Eaton | the `status` event of `amx-service` (a switch on or off, a dimmer its level); every Eaton light is asked once after the start, and once after a command whose change was not reported within 5 s | - |
 
   It is kept in memory and stored in `light_state` - a row when a light is switched or its
   brightness or color changes, a confirmation moves `last_checked_at` - and read back at the
   start. A change within 2 minutes of a command of this service is attributed to the command's
   `source`, otherwise to what the Shelly device names (`button`, `switch`) or `external`.
+
+  **An Eaton actuator does not always get its status through** (HAS-295): after a command that was
+  sent, when no change is reported within `light.eaton.confirm-after` (5 s), the actuator is asked
+  for its status once; its answer arrives as the usual event. An answer without the change means the
+  command did not take, no answer leaves it unconfirmed - a WARN each, the state left as the light
+  reports it. A command that failed is not confirmed, and a Shelly light needs no confirmation.
 
 - **The occupancy of a room** comes from the switched-on presence and motion sensors of the registry
   and the BTHome gateways (read every 5 minutes), held in memory only - **after a start every room is
@@ -251,7 +257,11 @@ write of a rule takes effect at once. Commands go through the same drivers with 
 - **Manual hold**: a light whose last change was not this service's (a wall switch, the Shelly app, an AMX
   panel, the dashboard) is left alone for `manualHoldMinutes` after that change - `heldUntil` in the reads.
 - **Once**: a light gets no second command until it reports a change; a command that failed is not
-  repeated every minute.
+  repeated every minute. **One exception** (HAS-295): an Eaton light that answered the status request
+  with its state from before the command did not take it, and the next decision that sends it gets it
+  once more; after a second such answer nothing more until the light reports a change - a broken
+  actuator gets two commands at most. Only commands of the rules are sent once more, never those of the
+  empty house or a person.
 - A rule switched off by the resident does nothing.
 
 A run: `deviceId` (the light), `action` (`on` / `off`), `reason` (`auto-off`, `motion-on`, `motion-off`),
