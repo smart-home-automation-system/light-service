@@ -33,7 +33,8 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
   database 4 / water 2 / presence 2 / blinds 2 / weather 2 / light 2 = 16 of 22), pinned by
   `LightServiceApplicationTest`. Tables: `light_state` (`V1`, HAS-259), `light_room_rule` and
   `light_motion_period` (`V2`, HAS-261), `light_rule_run` (`V3`, HAS-262 - its Jira text says `V4`),
-  `light_simulation_phase` and `light_simulation_spot` (`V4`, HAS-263). **The next migration is `V5`**.
+  `light_simulation_phase` and `light_simulation_spot` (`V4`, HAS-263), `light_availability_alert` (`V5`,
+  HAS-264). **The next migration is `V6`**.
 - Integrates with hardware: the Eaton lights through `amx-service`, the Shelly lights over HTTP
   (commands) and MQTT (status topics) - from HAS-258 on.
 
@@ -106,8 +107,9 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
     reconciliation that **never changes reachability** (MQTT owns it).
   - Gen1: `/status` every 60 s (`relays[]` for a relay, `lights[]` for the rest; the mode color by
     its gain), a failure makes the light unreachable; `GET /events/gen1?device=<registry id>&event=on|off`
-    for the `out_on_url` / `out_off_url` actions - **not configured on any device yet** (no Shelly light
-    is in the registry before HAS-269); they come through the gateway, which routes `/light` since 0.8.0. Unauthenticated
+    for the `out_on_url` / `out_off_url` actions - **configured on all 17 Gen1 lights since 2026-10-20**
+    (`deployment-tools/scripts/shelly/devices.md`: on known in 0.1-0.2 s, off in about 3 s); they come through the
+    gateway, which routes `/light` since 0.8.0. Unauthenticated
     like everything behind the gateway - anyone on the LAN can write a Gen1 state; the rules must not
     act on one the next poll has not confirmed.
   - Eaton: the `status` event on `eaton.<gateway>.<point>` - the gateway of the light's own binding,
@@ -265,3 +267,24 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
   - **The lights of the house were completed for it** (owner, 2026-10-19; registry 105-128,
     `deployment-tools/scripts/shelly/devices.md`): every Shelly light, sanctum and sauna included; 105, 106 and
     116 checked by switching, the rest to check by day.
+- **The availability monitor** (HAS-264), package `monitor`: `AvailabilityMonitor` every minute (initial PT2M),
+  the pure `AvailabilityEvaluator` (pinned by `AvailabilityEvaluatorTest`):
+  - **Shelly lights** are out after `light.monitor.offline-after` (PT5M) of `reachable: false` in `LightStateTracker`
+    (Gen1: failed polls of `/status`; Gen2: the MQTT last will); a reachability not known (after a start) is not
+    judged, the time it went unreachable is in memory. **Eaton lights are not watched.**
+  - **Sensors** by silence of their reports in `OccupancyTracker`: a presence sensor after `sensor-silent-after`
+    (PT30M), a battery motion sensor (BLU Motion, Shelly Motion) after `battery-silent-after` (PT24H); one never
+    heard since the start counts from the start. **The PIRs of the AMX system are not watched** (they report only
+    after dark). The circulation sensor of bathroom up (100) reports rarely by its settings - the first candidate
+    should a silence alert turn out false.
+  - **One message per pass and kind** - one alert naming every device newly out, one reminder (`reminder-every`,
+    PT1H), one info for the returns - so a Wi-Fi outage is one message. A device removed from the registry while out
+    is forgotten without a word.
+  - **The open alerts are in `light_availability_alert`** (V5, the shape of `temperature_sensor_alert` of
+    heating-service), so a restart neither repeats an alert nor forgets a return; the table moves only once the
+    broker took the message (a failed publish is tried again with the next pass, cut off after 30 s). Rows are
+    inserted by `R2dbcEntityTemplate.insert` - the registry id is the key.
+  - Proven outside the cluster (2026-10-20): the jar with `home,local` (`env: dev`), a stub registry with one Gen1
+    light at a dead address and the broker through a port-forward put exactly one alert into
+    `notification.dev.alert`, not repeated by the next passes. **A local run against the real broker needs both
+    passwords** - the device listener with a dummy one gets ACCESS_REFUSED, which stops the application.

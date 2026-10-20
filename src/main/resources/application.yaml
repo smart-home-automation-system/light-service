@@ -106,6 +106,15 @@ light:
   empty-house:
     enabled: true
     after: PT10M
+  # the availability monitor (HAS-264): a Shelly light that does not answer for offline-after (a Gen1 light is
+  # polled every minute), a presence sensor silent for sensor-silent-after (it publishes about once a minute),
+  # a battery motion sensor silent for battery-silent-after (it sends only when it senses something); an outage
+  # that goes on is repeated every reminder-every
+  monitor:
+    offline-after: PT5M
+    reminder-every: PT1H
+    sensor-silent-after: PT30M
+    battery-silent-after: PT24H
   # where the house is, for the sunrise and the dusk of the presence simulation. No default on purpose:
   # a private fact, the manifest gives it (as for blinds-service); without it the service does not start
   location:
