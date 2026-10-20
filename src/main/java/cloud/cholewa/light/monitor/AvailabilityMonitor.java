@@ -124,7 +124,7 @@ public class AvailabilityMonitor {
                     unreachableSince.remove(light.id());
                 }
                 return new Watched(light.id(), light.name(), light.room().getValue(), Kind.LIGHT,
-                    unreachableSince.get(light.id()));
+                    unreachableSince.get(light.id()), status.reachable() != null);
             }))
             .collectList();
     }
@@ -143,7 +143,8 @@ public class AvailabilityMonitor {
                 final RoomOccupancy.SensorView view = views.get(sensor.room()).get(sensor.id());
                 final LocalDateTime heard = view == null || view.lastReportAt() == null ? startedAt : view.lastReportAt();
                 return new Watched(sensor.id(), sensor.name(), sensor.room().getValue(),
-                    sensor.kind() == SensorKind.PRESENCE ? Kind.PRESENCE_SENSOR : Kind.BATTERY_SENSOR, heard);
+                    sensor.kind() == SensorKind.PRESENCE ? Kind.PRESENCE_SENSOR : Kind.BATTERY_SENSOR, heard,
+                    view != null && view.lastReportAt() != null);
             })
             .toList();
     }

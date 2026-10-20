@@ -18,7 +18,8 @@ import java.util.stream.Collectors;
 //- a presence sensor is out once it has been silent for sensorSilentAfter, a battery sensor for
 //  batterySilentAfter, since it was last heard;
 //- out and not announced: an alert; announced and still out: a reminder every reminderEvery; announced and
-//  back: an info; announced and no longer watched (removed from the registry): forgotten without a word.
+//  back - known to be, never only not known to be out after a restart: an info; announced and no longer
+//  watched (removed from the registry): forgotten without a word.
 @NoArgsConstructor(access = AccessLevel.PRIVATE)
 public final class AvailabilityEvaluator {
 
@@ -39,9 +40,12 @@ public final class AvailabilityEvaluator {
 
     /**
      * A watched device: a light with when it became unreachable (null while it is reachable or not known), a
-     * sensor with when it was last heard.
+     * sensor with when it was last heard - for one never heard since the start, the start.
+     *
+     * @param known whether what is known of it now can end an outage: a light whose reachability is known, a
+     *              sensor heard since the start. After a restart neither says the device is back
      */
-    public record Watched(long id, String name, String room, Kind kind, LocalDateTime since) {
+    public record Watched(long id, String name, String room, Kind kind, LocalDateTime since, boolean known) {
     }
 
     /** An alert the household had. */
@@ -69,7 +73,7 @@ public final class AvailabilityEvaluator {
                 alerts.add(new Alert(device.id(), device.kind(), device.name(), device.room(), device.since(), now));
             } else if (out && !alert.lastAlertAt().plus(properties.reminderEvery()).isAfter(now)) {
                 reminders.add(alert);
-            } else if (!out && alert != null) {
+            } else if (!out && alert != null && device.known()) {
                 returns.add(alert);
             }
         }

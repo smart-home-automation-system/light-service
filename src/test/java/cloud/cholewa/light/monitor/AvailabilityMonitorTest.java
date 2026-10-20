@@ -147,6 +147,19 @@ class AvailabilityMonitorTest {
         verify(notificationPublisher, never()).publishAlert(anyString());
     }
 
+    //after a restart the light is not known yet: its alert stays open, no false return
+    @Test
+    void should_keep_the_alert_of_a_light_not_known_after_a_restart() {
+        when(lightStateTracker.status(TOBI_MAIN.id())).thenReturn(Mono.just(LightStatus.unknown()));
+        when(alertRepository.findAll()).thenReturn(Flux.just(new AvailabilityAlertEntity(110L, "light", "Main", "tobi",
+            START.minusHours(1), START.minusMinutes(30))));
+
+        check();
+
+        verify(notificationPublisher, never()).publishInfo(anyString());
+        verify(alertRepository, never()).deleteById(110L);
+    }
+
     @Test
     void should_announce_a_return_and_close_the_alert() {
         when(alertRepository.findAll()).thenReturn(Flux.just(new AvailabilityAlertEntity(110L, "light", "Main", "tobi",
