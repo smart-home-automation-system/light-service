@@ -149,6 +149,92 @@ class RuleEngineTest {
 
     //cut off by its timeout with a command in flight: the light it never got to is commanded by the next
     //pass, the one in flight is not commanded again
+    //HAS-295, owner 2026-10-20: a command the light answered without its change is sent once more - never a
+    //third time until the light reports a change
+    @Test
+    void should_send_a_command_that_did_not_take_once_more_and_no_more() {
+        when(lightStateTracker.status(BEDROOM_CEILING.id())).thenReturn(Mono.just(on("external", EVENING.minusHours(2))));
+
+        engine.tick().as(StepVerifier::create).verifyComplete();
+        now.set(EVENING.plusMinutes(1));
+        engine.tick().as(StepVerifier::create).verifyComplete();
+        verify(lightCommandService, times(1)).turn(BEDROOM_CEILING.id(), Turn.OFF, CommandSource.RULE);
+
+        when(lightStateTracker.notTaken(BEDROOM_CEILING.id(), CommandSource.RULE)).thenReturn(true);
+        now.set(EVENING.plusMinutes(2));
+        engine.tick().as(StepVerifier::create).verifyComplete();
+        verify(lightCommandService, times(2)).turn(BEDROOM_CEILING.id(), Turn.OFF, CommandSource.RULE);
+
+        //the second command did not take either
+        now.set(EVENING.plusMinutes(3));
+        engine.tick().as(StepVerifier::create).verifyComplete();
+        now.set(EVENING.plusMinutes(4));
+        engine.tick().as(StepVerifier::create).verifyComplete();
+        verify(lightCommandService, times(2)).turn(BEDROOM_CEILING.id(), Turn.OFF, CommandSource.RULE);
+        verify(lightCommandService, never()).turn(BEDROOM_RELAY.id(), Turn.OFF, CommandSource.RULE);
+    }
+
+    //a light that reported a change since its command was sent once more may get one more again at a later miss
+    @Test
+    void should_allow_one_more_command_again_after_the_light_reported_a_change() {
+        when(lightStateTracker.status(BEDROOM_CEILING.id())).thenReturn(Mono.just(on("external", EVENING.minusHours(2))));
+        when(lightStateTracker.notTaken(BEDROOM_CEILING.id(), CommandSource.RULE)).thenReturn(true);
+
+        engine.tick().as(StepVerifier::create).verifyComplete();
+        now.set(EVENING.plusMinutes(1));
+        engine.tick().as(StepVerifier::create).verifyComplete();
+        verify(lightCommandService, times(2)).turn(BEDROOM_CEILING.id(), Turn.OFF, CommandSource.RULE);
+
+        //switched on again by the rules of a motion, a change after the one more command: the command it
+        //answered is used up, and the next one goes out as usual
+        when(lightStateTracker.status(BEDROOM_CEILING.id())).thenReturn(Mono.just(on("rule", EVENING.plusMinutes(2))));
+        when(lightStateTracker.notTaken(BEDROOM_CEILING.id(), CommandSource.RULE)).thenReturn(false);
+        now.set(EVENING.plusMinutes(3));
+        engine.tick().as(StepVerifier::create).verifyComplete();
+        verify(lightCommandService, times(3)).turn(BEDROOM_CEILING.id(), Turn.OFF, CommandSource.RULE);
+
+        //and when that one does not take, it is sent once more again
+        when(lightStateTracker.notTaken(BEDROOM_CEILING.id(), CommandSource.RULE)).thenReturn(true);
+        now.set(EVENING.plusMinutes(4));
+        engine.tick().as(StepVerifier::create).verifyComplete();
+
+        verify(lightCommandService, times(4)).turn(BEDROOM_CEILING.id(), Turn.OFF, CommandSource.RULE);
+    }
+
+    //the one more command is spent only by a decision that sends it: a room occupied meanwhile keeps it
+    @Test
+    void should_keep_the_one_more_command_for_a_decision_that_sends_it() {
+        when(lightStateTracker.status(BEDROOM_CEILING.id())).thenReturn(Mono.just(on("external", EVENING.minusHours(2))));
+
+        engine.tick().as(StepVerifier::create).verifyComplete();
+        when(lightStateTracker.notTaken(BEDROOM_CEILING.id(), CommandSource.RULE)).thenReturn(true);
+
+        //somebody moved there a minute ago: the pass decides nothing for the light
+        when(occupancyTracker.room(RoomName.BEDROOM)).thenReturn(emptyBedroom(EVENING));
+        now.set(EVENING.plusMinutes(1));
+        engine.tick().as(StepVerifier::create).verifyComplete();
+        verify(lightCommandService, times(1)).turn(BEDROOM_CEILING.id(), Turn.OFF, CommandSource.RULE);
+
+        //empty long enough again: the one more command goes out now
+        now.set(EVENING.plusHours(2));
+        engine.tick().as(StepVerifier::create).verifyComplete();
+        verify(lightCommandService, times(2)).turn(BEDROOM_CEILING.id(), Turn.OFF, CommandSource.RULE);
+    }
+
+    //a command of the rules only: one of the dashboard that did not take is the person's to repeat
+    @Test
+    void should_not_send_once_more_for_a_command_that_was_not_the_rules() {
+        when(lightStateTracker.status(BEDROOM_CEILING.id())).thenReturn(Mono.just(on("external", EVENING.minusHours(2))));
+        when(lightStateTracker.notTaken(BEDROOM_CEILING.id(), CommandSource.RULE)).thenReturn(false);
+        when(lightStateTracker.notTaken(BEDROOM_CEILING.id(), CommandSource.DASHBOARD)).thenReturn(true);
+
+        engine.tick().as(StepVerifier::create).verifyComplete();
+        now.set(EVENING.plusMinutes(1));
+        engine.tick().as(StepVerifier::create).verifyComplete();
+
+        verify(lightCommandService, times(1)).turn(BEDROOM_CEILING.id(), Turn.OFF, CommandSource.RULE);
+    }
+
     @Test
     void should_leave_the_lights_a_cut_off_pass_never_got_to_free_for_the_next_one() {
         when(lightStateTracker.status(BEDROOM_CEILING.id())).thenReturn(Mono.just(on("external", EVENING.minusHours(2))));

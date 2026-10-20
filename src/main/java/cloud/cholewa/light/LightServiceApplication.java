@@ -1,5 +1,6 @@
 package cloud.cholewa.light;
 
+import cloud.cholewa.light.config.EatonProperties;
 import cloud.cholewa.light.config.EmptyHouseProperties;
 import cloud.cholewa.light.config.InternalServiceProperties;
 import cloud.cholewa.light.config.LocationProperties;
@@ -17,7 +18,8 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
     OccupancyProperties.class,
     EmptyHouseProperties.class,
     LocationProperties.class,
-    MonitorProperties.class
+    MonitorProperties.class,
+    EatonProperties.class
 })
 public class LightServiceApplication {
 

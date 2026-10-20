@@ -14,6 +14,7 @@ import cloud.cholewa.light.model.RoomCommandReply.LightOutcome;
 import cloud.cholewa.light.model.Turn;
 import cloud.cholewa.light.registry.LightRegistry;
 import cloud.cholewa.light.state.LightStateTracker;
+import cloud.cholewa.light.state.LightStateTracker.IssuedCommand;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -26,8 +27,9 @@ import java.util.function.Function;
 //The commands for the lights. Every one is checked against what the light can do, logged with who
 //asked for it, noted for the tracker (the change it makes is attributed to its source), and sent once -
 //nothing is retried. A command writes no state: whether a light is on
-//comes only from what the devices report (HAS-259). Whatever a driver fails with becomes
-//DEVICE_FAILED, a 502, with the reason in the log
+//comes only from what the devices report (HAS-259); a command to an Eaton light that was sent is
+//confirmed by a status request when its change is not reported (HAS-295). Whatever a driver fails
+//with becomes DEVICE_FAILED, a 502, with the reason in the log
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -36,6 +38,7 @@ public class LightCommandService {
     private final LightRegistry lightRegistry;
     private final LightDrivers lightDrivers;
     private final LightStateTracker lightStateTracker;
+    private final EatonCommandConfirmation eatonCommandConfirmation;
 
     public Mono<Void> turn(final long id, final Turn turn, final CommandSource source) {
         return lightRegistry.find(id).flatMap(light -> turn(light, turn, source));
@@ -106,8 +109,11 @@ public class LightCommandService {
                 log.info("Light {} ({}, {}) asked to {} by {}",
                     light.id(), light.name(), light.room().getValue(), what, source.value());
                 //before the call: a device may report the change before it answers
-                lightStateTracker.commanded(light, source);
-                return call.apply(lightDrivers.of(light));
+                final IssuedCommand issued = lightStateTracker.commanded(light, source);
+                //the wait starts once the command is sent; a command that failed may have switched
+                //the light, and its change is still attributed, but nobody asks
+                return call.apply(lightDrivers.of(light))
+                    .doOnSuccess(sent -> eatonCommandConfirmation.start(light, issued));
             })
             .onErrorMap(e -> !(e instanceof LightException), e -> LightException.deviceFailed(light, e));
     }

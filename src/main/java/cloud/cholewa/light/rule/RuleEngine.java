@@ -33,6 +33,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -49,7 +50,11 @@ import java.util.function.Function;
 //remembers - when it last commanded a light, when it last named a room it could not judge - is lost with a
 //restart, which only lets one command more through.
 //Every command is logged in light_rule_run, whatever its outcome; a log that cannot be written is a WARN,
-//never a failed pass. A command that fails is not repeated until the light reports a change
+//never a failed pass. A command that fails is not repeated until the light reports a change - with one
+//exception (HAS-295, owner 2026-10-20): an Eaton light that answered the status request of
+//EatonCommandConfirmation with its state from before the command did not take it, and may get the command
+//once more; after a second such answer nothing more is sent until the light reports a change, so a broken
+//actuator gets two commands at most
 @Slf4j
 @Component
 @RequiredArgsConstructor
@@ -76,6 +81,8 @@ public class RuleEngine {
     private final Clock clock;
 
     private final Map<Long, LocalDateTime> commandedAt = new ConcurrentHashMap<>();
+    //the lights whose command was released once because it did not take, and when (HAS-295)
+    private final Map<Long, LocalDateTime> retriedAt = new ConcurrentHashMap<>();
     private final Map<RoomName, LocalDateTime> skipLoggedAt = new ConcurrentHashMap<>();
     //zero in the tests
     Duration settleDelay = SETTLE;
@@ -159,10 +166,13 @@ public class RuleEngine {
             .map(states -> {
                 synchronized (commandedAt) {
                     final LocalDateTime now = now();
+                    final Map<Long, LocalDateTime> released = new HashMap<>();
+                    states.forEach(state -> releaseNotTaken(state, released));
                     final RoomSnapshot snapshot = new RoomSnapshot(rule, occupancyTracker.room(room), states.stream()
                         .map(state -> new LightSnapshot(state.light(), state.status(), commandedAt.get(state.light().id())))
                         .toList());
                     final List<RuleAction> actions = evaluate.apply(snapshot);
+                    keepUnusedReleases(room, states, actions, released, now);
                     actions.forEach(action -> commandedAt.put(action.light().id(), now));
                     return new Decision(actions, now);
                 }
@@ -184,6 +194,45 @@ public class RuleEngine {
                 .map(action -> action.light().id())
                 .filter(id -> !started.contains(id))
                 .forEach(id -> commandedAt.remove(id, decision.at())));
+    }
+
+    //A command of the rules that did not take is released for the decision about to be taken, so it may send
+    //the command again; the guard it had is kept in released. A light that reported a change since its one
+    //more command may be released again by a later miss
+    private void releaseNotTaken(final LightState state, final Map<Long, LocalDateTime> released) {
+        final long id = state.light().id();
+        final LocalDateTime retried = retriedAt.get(id);
+        final LocalDateTime changedAt = state.status().changedAt();
+        if (retried != null && changedAt != null && changedAt.isAfter(retried)) {
+            retriedAt.remove(id, retried);
+        }
+        final LocalDateTime guard = commandedAt.get(id);
+        if (guard == null || retriedAt.containsKey(id) || !lightStateTracker.notTaken(id, CommandSource.RULE)) {
+            return;
+        }
+        commandedAt.remove(id);
+        released.put(id, guard);
+    }
+
+    //The one more command is spent only by a decision that sends it: a release the decision did not use - a
+    //missed motion-on, which the pass does not decide again; a room occupied meanwhile - gets its guard back
+    private void keepUnusedReleases(
+        final RoomName room,
+        final List<LightState> states,
+        final List<RuleAction> actions,
+        final Map<Long, LocalDateTime> released,
+        final LocalDateTime now
+    ) {
+        released.forEach((id, guard) -> {
+            if (actions.stream().noneMatch(action -> action.light().id() == id)) {
+                commandedAt.put(id, guard);
+                return;
+            }
+            retriedAt.put(id, now);
+            states.stream().filter(state -> state.light().id() == id).findFirst().ifPresent(state ->
+                log.info("Rule of the {}: light {} ({}) did not take the command, it is sent once more",
+                    room.getValue(), id, state.light().name()));
+        });
     }
 
     private void skipped(final RoomName room, final String why) {

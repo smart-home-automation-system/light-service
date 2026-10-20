@@ -79,7 +79,8 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
     parameter for it.
   - Eaton: `/home/amx/eaton/lights/{point}?turn=` and `/level?value=`; a group point is a light of
     its own in the registry.
-- **Commands** (`LightCommandService`): sent once, never retried, logged with their `source`.
+- **Commands** (`LightCommandService`): sent once, never retried, logged with their `source`; one to an Eaton
+  light is confirmed by a status request when its change is not reported (HAS-295, below).
   Anything a driver fails with becomes `DEVICE_FAILED`, a 502 whose answer carries the code alone
   — what the device said goes to the ERROR line of `LightExceptionProcessor`. A room goes one
   light after the other, each with its own error handling; a room where no light took the command
@@ -112,6 +113,16 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
     gateway, which routes `/light` since 0.8.0. Unauthenticated
     like everything behind the gateway - anyone on the LAN can write a Gen1 state; the rules must not
     act on one the next poll has not confirmed.
+  - **An Eaton command is confirmed, not assumed** (HAS-295): the actuator's status may be lost (Kitchen
+    cabinet, 2026-10-20: the gateway took the telegram, no `C1` came, the light stayed `on` here).
+    `commanded()` returns the `IssuedCommand` (compared by identity); `EatonCommandConfirmation` - a copy of
+    `EatonMoveConfirmation` of blinds-service - waits `light.eaton.confirm-after` (`EatonProperties`, PT5S,
+    1-60 s, seconds) after a command that was sent, asks once (`asked()` before the request, `askFailed()`
+    when it fails - a later confirmation then answers nobody), and `confirm-after` later reports *did not
+    take* (a confirmation after the request, `notTaken`) or *unconfirmed* (no answer), a WARN each. A Shelly
+    light, a failed command and a replaced command are not confirmed. Accepted in review: the requests of a
+    room are not spaced like `EatonStatusRequests` (only lights whose status was lost are asked); a command to
+    the state the light is already in (a person's "on" for a lit light) is reported as *did not take*.
   - Eaton: the `status` event on `eaton.<gateway>.<point>` - the gateway of the light's own binding,
     so a blind on the same point of the other gateway is never taken for it; a switch `0` / `1`, a
     dimmer its level. **`EatonStatusRequests` asks every Eaton light once** after the start (a minute
@@ -214,7 +225,11 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
     The reads answer it as `heldUntil` while it lasts (by the `RuleBook`; left out with no rule).
   - **Once**: a light the engine sent a command to gets no other until it reports a change (`changedAt` after the
     command) - a failed or unconfirmed command is not repeated every minute; the memory of it is lost with a
-    restart. A pass cut off by its 50 s leaves the lights it never got to unmarked (the one in flight stays). The decision and the note of its commands are taken together (one lock), so a motion and the pass
+    restart. **One more command** (HAS-295, owner 2026-10-20): a command of the rules the light did not take
+    (`notTaken(id, RULE)`) is released for the next decision (`releaseNotTaken`) and spent only by a decision
+    that sends it (`keepUnusedReleases` puts the guard back otherwise - a missed motion-on is not decided again
+    by the pass); `retriedAt` keeps it to one until the light reports a change. The empty house and a person's
+    commands are never sent once more. A pass cut off by its 50 s leaves the lights it never got to unmarked (the one in flight stays). The decision and the note of its commands are taken together (one lock), so a motion and the pass
     never both command a light.
   - **Auto-off**: lights known on and not held, `autoOffDelayMinutes` after the room is empty - with a presence
     sensor from its `since` (or a later motion), with motion sensors only from the last motion. A presence
