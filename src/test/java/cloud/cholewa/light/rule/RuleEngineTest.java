@@ -201,6 +201,26 @@ class RuleEngineTest {
         verify(lightCommandService, times(4)).turn(BEDROOM_CEILING.id(), Turn.OFF, CommandSource.RULE);
     }
 
+    //the one more command is spent only by a decision that sends it: a room occupied meanwhile keeps it
+    @Test
+    void should_keep_the_one_more_command_for_a_decision_that_sends_it() {
+        when(lightStateTracker.status(BEDROOM_CEILING.id())).thenReturn(Mono.just(on("external", EVENING.minusHours(2))));
+
+        engine.tick().as(StepVerifier::create).verifyComplete();
+        when(lightStateTracker.notTaken(BEDROOM_CEILING.id(), CommandSource.RULE)).thenReturn(true);
+
+        //somebody moved there a minute ago: the pass decides nothing for the light
+        when(occupancyTracker.room(RoomName.BEDROOM)).thenReturn(emptyBedroom(EVENING));
+        now.set(EVENING.plusMinutes(1));
+        engine.tick().as(StepVerifier::create).verifyComplete();
+        verify(lightCommandService, times(1)).turn(BEDROOM_CEILING.id(), Turn.OFF, CommandSource.RULE);
+
+        //empty long enough again: the one more command goes out now
+        now.set(EVENING.plusHours(2));
+        engine.tick().as(StepVerifier::create).verifyComplete();
+        verify(lightCommandService, times(2)).turn(BEDROOM_CEILING.id(), Turn.OFF, CommandSource.RULE);
+    }
+
     //a command of the rules only: one of the dashboard that did not take is the person's to repeat
     @Test
     void should_not_send_once_more_for_a_command_that_was_not_the_rules() {

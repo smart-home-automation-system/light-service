@@ -61,6 +61,7 @@ public class EatonCommandConfirmation {
             .thenReturn(true)
             .onErrorResume(e -> {
                 log.warn("The status of light {} ({}) could not be asked: {}", light.id(), light.name(), e.toString());
+                lightStateTracker.askFailed(command);
                 return Mono.just(false);
             });
     }

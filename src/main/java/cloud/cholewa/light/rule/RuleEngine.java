@@ -33,6 +33,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -165,11 +166,13 @@ public class RuleEngine {
             .map(states -> {
                 synchronized (commandedAt) {
                     final LocalDateTime now = now();
-                    states.forEach(state -> releaseNotTaken(room, state, now));
+                    final Map<Long, LocalDateTime> released = new HashMap<>();
+                    states.forEach(state -> releaseNotTaken(state, released));
                     final RoomSnapshot snapshot = new RoomSnapshot(rule, occupancyTracker.room(room), states.stream()
                         .map(state -> new LightSnapshot(state.light(), state.status(), commandedAt.get(state.light().id())))
                         .toList());
                     final List<RuleAction> actions = evaluate.apply(snapshot);
+                    keepUnusedReleases(room, states, actions, released, now);
                     actions.forEach(action -> commandedAt.put(action.light().id(), now));
                     return new Decision(actions, now);
                 }
@@ -193,22 +196,43 @@ public class RuleEngine {
                 .forEach(id -> commandedAt.remove(id, decision.at())));
     }
 
-    //A command of the rules that did not take is released once, so the decision may send it again. A light
-    //that reported a change since its release may be released again by a later miss
-    private void releaseNotTaken(final RoomName room, final LightState state, final LocalDateTime now) {
+    //A command of the rules that did not take is released for the decision about to be taken, so it may send
+    //the command again; the guard it had is kept in released. A light that reported a change since its one
+    //more command may be released again by a later miss
+    private void releaseNotTaken(final LightState state, final Map<Long, LocalDateTime> released) {
         final long id = state.light().id();
         final LocalDateTime retried = retriedAt.get(id);
         final LocalDateTime changedAt = state.status().changedAt();
         if (retried != null && changedAt != null && changedAt.isAfter(retried)) {
             retriedAt.remove(id, retried);
         }
-        if (!commandedAt.containsKey(id) || !lightStateTracker.notTaken(id, CommandSource.RULE)
-            || retriedAt.putIfAbsent(id, now) != null) {
+        final LocalDateTime guard = commandedAt.get(id);
+        if (guard == null || retriedAt.containsKey(id) || !lightStateTracker.notTaken(id, CommandSource.RULE)) {
             return;
         }
         commandedAt.remove(id);
-        log.info("Rule of the {}: light {} ({}) did not take the command, it may be sent once more",
-            room.getValue(), id, state.light().name());
+        released.put(id, guard);
+    }
+
+    //The one more command is spent only by a decision that sends it: a release the decision did not use - a
+    //missed motion-on, which the pass does not decide again; a room occupied meanwhile - gets its guard back
+    private void keepUnusedReleases(
+        final RoomName room,
+        final List<LightState> states,
+        final List<RuleAction> actions,
+        final Map<Long, LocalDateTime> released,
+        final LocalDateTime now
+    ) {
+        released.forEach((id, guard) -> {
+            if (actions.stream().noneMatch(action -> action.light().id() == id)) {
+                commandedAt.put(id, guard);
+                return;
+            }
+            retriedAt.put(id, now);
+            states.stream().filter(state -> state.light().id() == id).findFirst().ifPresent(state ->
+                log.info("Rule of the {}: light {} ({}) did not take the command, it is sent once more",
+                    room.getValue(), id, state.light().name()));
+        });
     }
 
     private void skipped(final RoomName room, final String why) {

@@ -112,6 +112,11 @@ public class LightStateTracker {
         command.asked.set(true);
     }
 
+    /** The status request of the command could not be sent: a later confirmation answers nobody. */
+    public void askFailed(final IssuedCommand command) {
+        command.asked.set(false);
+    }
+
     /** The command is still the light's, and the light answered the status request without its change. */
     public boolean notTaken(final Light light, final IssuedCommand command) {
         return awaitingChange(light, command) && command.notTaken.get();

@@ -138,6 +138,7 @@ class EatonCommandConfirmationTest {
             .verifyComplete();
 
         verify(driver, times(1)).requestStatus(CABINET);
+        verify(tracker).askFailed(issued);
         verify(tracker, never()).notTaken(any(), any());
         assertThat(warnings()).containsExactly(
             "The status of light 22 (Kitchen cabinet) could not be asked: java.lang.IllegalStateException: amx-service answered 502");

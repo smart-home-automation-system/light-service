@@ -185,6 +185,19 @@ class LightStateTrackerTest {
         assertThat(tracker.notTaken(25, CommandSource.DASHBOARD)).isFalse();
     }
 
+    //a request that could not be sent is answered by nobody: a later confirmation proves nothing
+    @Test
+    void should_not_take_a_confirmation_after_a_failed_status_request_as_an_answer() {
+        tracker.observe(SOFA, LightReading.switched(true)).as(StepVerifier::create).verifyComplete();
+        final LightStateTracker.IssuedCommand off = tracker.commanded(SOFA, CommandSource.RULE);
+        tracker.asked(off);
+        tracker.askFailed(off);
+
+        tracker.observe(SOFA, LightReading.switched(true)).as(StepVerifier::create).verifyComplete();
+
+        assertThat(tracker.notTaken(SOFA, off)).isFalse();
+    }
+
     //the change came with the answer: the command took, late
     @Test
     void should_take_a_change_after_the_status_request_as_a_command_that_took() {
