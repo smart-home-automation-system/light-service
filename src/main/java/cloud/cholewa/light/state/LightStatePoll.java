@@ -6,6 +6,7 @@ import cloud.cholewa.light.model.Light;
 import cloud.cholewa.light.model.LightBinding;
 import cloud.cholewa.light.model.LightReading;
 import cloud.cholewa.light.registry.LightRegistry;
+import cloud.cholewa.shelly.http.ShellyCallException;
 import cloud.cholewa.shelly.http.ShellyGen1Client;
 import cloud.cholewa.shelly.http.ShellyRpcClient;
 import cloud.cholewa.shelly.model.Gen1DeviceStatus;
@@ -29,7 +30,8 @@ import java.util.function.Predicate;
 //Each device is asked with its own error handling, so one that does not answer neither stops the pass
 //nor delays the others for long. A Gen1 light that does not answer becomes unreachable - the poll is
 //all that is heard of it. A Gen2+ light does not: its reachability is what MQTT says (online, and every
-//status it publishes), and one failed HTTP call next to a live MQTT stream would only make it flap.
+//status it publishes), and one failed HTTP call next to a live MQTT stream would only make it flap - unless
+//MQTT has said nothing since the start, then a failed reconciliation makes it unreachable (HAS-264).
 //Nothing is retried - the next pass asks again. fixedDelay: the next pass waits for the last one to
 //end; each pass is built anew (Mono.defer), Spring subscribes again to the same Mono for every run.
 //Off under the test profile
@@ -57,7 +59,22 @@ public class LightStatePoll {
     Mono<Void> reconcileGen2() {
         return Mono.defer(() -> pass(light -> light.binding() instanceof LightBinding.ShellyGen2, this::readGen2,
             (light, e) -> Mono.fromRunnable(() -> log.info("Reconciliation of light {} ({}) failed: {}",
-                light.id(), light.name(), e.toString()))));
+                    light.id(), light.name(), e.toString()))
+                .then(unknownIsUnreachable(light, e))));
+    }
+
+    //MQTT owns the reachability of a Gen2+ light - except while it has said nothing: its last will of before a
+    //restart is not delivered again, so a light dead since then would stay not known for ever. Not known and not
+    //answering is unreachable (HAS-264); known, it is left to MQTT, so a lost call next to a live stream does not
+    //make it flap
+    //a device that answered without the output it should have is not unreachable - only a call that failed
+    private Mono<Void> unknownIsUnreachable(final Light light, final Throwable e) {
+        if (!(e instanceof ShellyCallException)) {
+            return Mono.empty();
+        }
+        return lightStateTracker.status(light.id())
+            .filter(status -> status.reachable() == null)
+            .flatMap(status -> lightStateTracker.reachability(light, false, "no MQTT word and " + e));
     }
 
     private Mono<Void> pass(
