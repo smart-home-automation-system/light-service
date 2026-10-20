@@ -123,7 +123,7 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
     light, a failed command and a replaced command are not confirmed. Accepted in review: the requests of a
     room are not spaced like `EatonStatusRequests` (only lights whose status was lost are asked); a command to
     the state the light is already in (a person's "on" for a lit light) is reported as *did not take*.
-
+  - Eaton: the `status` event on `eaton.<gateway>.<point>` - the gateway of the light's own binding,
     so a blind on the same point of the other gateway is never taken for it; a switch `0` / `1`, a
     dimmer its level. **`EatonStatusRequests` asks every Eaton light once** after the start (a minute
     in, a second apart, `POST /home/amx/eaton/lights/{point}/status` - amx-service ≥ 2.4.0); its
