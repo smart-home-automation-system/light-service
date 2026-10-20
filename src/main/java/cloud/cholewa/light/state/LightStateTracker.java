@@ -100,7 +100,8 @@ public class LightStateTracker {
 
     /** Whether the command is still the light's and waits for its change: no change reported, not replaced. */
     public boolean awaitingChange(final Light light, final IssuedCommand command) {
-        return pendingCommand(light.id()) == command;
+        //no command is never the light's: pendingCommand answers null for a light without one
+        return command != null && pendingCommand(light.id()) == command;
     }
 
     /**
@@ -119,7 +120,7 @@ public class LightStateTracker {
 
     /** The command is still the light's, and the light answered the status request without its change. */
     public boolean notTaken(final Light light, final IssuedCommand command) {
-        return awaitingChange(light, command) && command.notTaken.get();
+        return command != null && awaitingChange(light, command) && command.notTaken.get();
     }
 
     /** The light's command is one of the source, and the light answered the status request without its change. */
