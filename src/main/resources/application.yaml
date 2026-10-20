@@ -97,6 +97,10 @@ rabbitmq:
     name: device.prod.light
 
 light:
+  # how long the status of an Eaton light is waited for after a command before the actuator is asked for
+  # it, and then how long its answer is (HAS-295); 1 to 60 s
+  eaton:
+    confirm-after: PT5S
   occupancy:
     # how long a BLU Motion counts as reachable without its gateway confirming it (HAS-260); the
     # gateways are read every 5 min, so 10 min to 24 h - the bound of the window sensors of blinds-service

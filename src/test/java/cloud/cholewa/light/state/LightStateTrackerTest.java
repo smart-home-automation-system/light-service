@@ -146,6 +146,80 @@ class LightStateTrackerTest {
             .verifyComplete();
     }
 
+    //HAS-295: the command waits for its change until the change, a newer command or the end of its window
+    @Test
+    void should_know_whether_a_command_still_waits_for_its_change() {
+        tracker.observe(SOFA, LightReading.switched(true)).as(StepVerifier::create).verifyComplete();
+        final LightStateTracker.IssuedCommand first = tracker.commanded(SOFA, CommandSource.RULE);
+        assertThat(tracker.awaitingChange(SOFA, first)).isTrue();
+
+        final LightStateTracker.IssuedCommand second = tracker.commanded(SOFA, CommandSource.RULE);
+        assertThat(tracker.awaitingChange(SOFA, first)).isFalse();
+        assertThat(tracker.awaitingChange(SOFA, second)).isTrue();
+
+        tracker.observe(SOFA, LightReading.switched(false)).as(StepVerifier::create).verifyComplete();
+        assertThat(tracker.awaitingChange(SOFA, second)).isFalse();
+
+        final LightStateTracker.IssuedCommand late = tracker.commanded(SOFA, CommandSource.RULE);
+        clock.advance(LightStateTracker.COMMAND_WINDOW.plusSeconds(1));
+        assertThat(tracker.awaitingChange(SOFA, late)).isFalse();
+    }
+
+    //the answer to the status request with the state from before: the command did not take
+    @Test
+    void should_take_a_confirmation_after_the_status_request_as_a_command_that_did_not_take() {
+        tracker.observe(SOFA, LightReading.switched(true)).as(StepVerifier::create).verifyComplete();
+        final LightStateTracker.IssuedCommand off = tracker.commanded(SOFA, CommandSource.RULE);
+
+        //a confirmation before anybody asked proves nothing
+        tracker.observe(SOFA, LightReading.switched(true)).as(StepVerifier::create).verifyComplete();
+        assertThat(tracker.notTaken(SOFA, off)).isFalse();
+
+        tracker.asked(off);
+        tracker.observe(SOFA, LightReading.switched(true)).as(StepVerifier::create).verifyComplete();
+
+        assertThat(tracker.notTaken(SOFA, off)).isTrue();
+        assertThat(tracker.awaitingChange(SOFA, off)).isTrue();
+        assertThat(tracker.notTaken(25, CommandSource.RULE)).isTrue();
+        //only the source of the command
+        assertThat(tracker.notTaken(25, CommandSource.DASHBOARD)).isFalse();
+    }
+
+    //the change came with the answer: the command took, late
+    @Test
+    void should_take_a_change_after_the_status_request_as_a_command_that_took() {
+        tracker.observe(SOFA, LightReading.switched(true)).as(StepVerifier::create).verifyComplete();
+        final LightStateTracker.IssuedCommand off = tracker.commanded(SOFA, CommandSource.RULE);
+        tracker.asked(off);
+
+        tracker.observe(SOFA, LightReading.switched(false)).as(StepVerifier::create).verifyComplete();
+
+        assertThat(tracker.notTaken(SOFA, off)).isFalse();
+        assertThat(tracker.notTaken(25, CommandSource.RULE)).isFalse();
+        tracker.status(25).as(StepVerifier::create)
+            .assertNext(status -> assertThat(status.source()).isEqualTo("rule"))
+            .verifyComplete();
+    }
+
+    //a newer command replaces the one that did not take, and its window ends it
+    @Test
+    void should_forget_a_command_that_did_not_take_once_replaced_or_out_of_its_window() {
+        tracker.observe(SOFA, LightReading.switched(true)).as(StepVerifier::create).verifyComplete();
+        final LightStateTracker.IssuedCommand off = tracker.commanded(SOFA, CommandSource.RULE);
+        tracker.asked(off);
+        tracker.observe(SOFA, LightReading.switched(true)).as(StepVerifier::create).verifyComplete();
+
+        clock.advance(LightStateTracker.COMMAND_WINDOW.plusSeconds(1));
+        assertThat(tracker.notTaken(25, CommandSource.RULE)).isFalse();
+
+        final LightStateTracker.IssuedCommand again = tracker.commanded(SOFA, CommandSource.RULE);
+        tracker.asked(again);
+        tracker.observe(SOFA, LightReading.switched(true)).as(StepVerifier::create).verifyComplete();
+        tracker.commanded(SOFA, CommandSource.DASHBOARD);
+        assertThat(tracker.notTaken(SOFA, again)).isFalse();
+        assertThat(tracker.notTaken(25, CommandSource.RULE)).isFalse();
+    }
+
     @Test
     void should_cut_the_word_of_a_device_to_the_width_of_the_column() {
         final LightStateTracker.Decision decision = LightStateTracker.decide(

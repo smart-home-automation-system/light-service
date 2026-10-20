@@ -44,7 +44,9 @@ class LightCommandServiceTest {
     private final LightDrivers drivers = mock(LightDrivers.class);
     private final LightDriver driver = mock(LightDriver.class);
     private final LightStateTracker tracker = mock(LightStateTracker.class);
-    private final LightCommandService service = new LightCommandService(registry, drivers, tracker);
+    private final EatonCommandConfirmation confirmation = mock(EatonCommandConfirmation.class);
+    private final LightStateTracker.IssuedCommand issued = mock(LightStateTracker.IssuedCommand.class);
+    private final LightCommandService service = new LightCommandService(registry, drivers, tracker, confirmation);
 
     @BeforeEach
     void setUp() {
@@ -52,6 +54,7 @@ class LightCommandServiceTest {
         when(registry.find(21)).thenReturn(Mono.just(CEILING));
         when(registry.find(22)).thenReturn(Mono.just(CABINET));
         when(registry.find(23)).thenReturn(Mono.just(BAR));
+        when(tracker.commanded(any(), any())).thenReturn(issued);
     }
 
     @Test
@@ -74,6 +77,32 @@ class LightCommandServiceTest {
         final InOrder order = inOrder(tracker, driver);
         order.verify(tracker).commanded(CEILING, CommandSource.RULE);
         order.verify(driver).turn(CEILING, true);
+    }
+
+    //HAS-295: the wait for the change starts once the command is sent, with the command the tracker noted
+    @Test
+    void should_start_the_confirmation_of_a_command_that_was_sent() {
+        when(driver.turn(CEILING, false)).thenReturn(Mono.empty());
+        when(driver.brightness(CABINET, 30)).thenReturn(Mono.empty());
+
+        service.turn(21, Turn.OFF, CommandSource.RULE).as(StepVerifier::create).verifyComplete();
+        service.brightness(22, 30, CommandSource.DASHBOARD).as(StepVerifier::create).verifyComplete();
+
+        final InOrder order = inOrder(driver, confirmation);
+        order.verify(driver).turn(CEILING, false);
+        order.verify(confirmation).start(CEILING, issued);
+        order.verify(driver).brightness(CABINET, 30);
+        order.verify(confirmation).start(CABINET, issued);
+    }
+
+    //a command that failed may have switched the light, but nobody asks
+    @Test
+    void should_not_confirm_a_command_that_failed() {
+        when(driver.turn(CEILING, true)).thenReturn(Mono.error(new ShellyCallException("timed out")));
+
+        service.turn(21, Turn.ON, CommandSource.RULE).as(StepVerifier::create).expectError(LightException.class).verify();
+
+        verify(confirmation, never()).start(any(), any());
     }
 
     //a command refused for what the light cannot do never reaches the tracker

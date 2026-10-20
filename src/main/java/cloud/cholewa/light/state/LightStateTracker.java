@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 //The real state of every light, whoever switched it - a wall switch, the Shelly app, an AMX panel or
@@ -53,7 +54,7 @@ public class LightStateTracker {
     private final Clock clock;
 
     private final Map<Long, LightStatus> statuses = new ConcurrentHashMap<>();
-    private final Map<Long, Command> commands = new ConcurrentHashMap<>();
+    private final Map<Long, IssuedCommand> commands = new ConcurrentHashMap<>();
     //the end of the last write of every light: the next one waits for it, so the rows of one light are
     //inserted in the order the states changed - the latest row (the highest id) is what a restart reads
     //back. Only the last one is held, never a chain of them
@@ -87,16 +88,46 @@ public class LightStateTracker {
      * A command of this service is about to go out: the change it makes is attributed to its source.
      * Noted before it is sent - a device may report the change before it answers - and kept when the
      * call fails: a command that timed out may have switched the light all the same.
+     *
+     * @return the command, for {@link #awaitingChange}, {@link #asked} and {@link #notTaken} - a newer
+     * command for the same light replaces it
      */
-    public void commanded(final Light light, final CommandSource source) {
-        commands.put(light.id(), new Command(source.value(), Instant.now(clock)));
+    public IssuedCommand commanded(final Light light, final CommandSource source) {
+        final IssuedCommand command = new IssuedCommand(source.value(), Instant.now(clock));
+        commands.put(light.id(), command);
+        return command;
+    }
+
+    /** Whether the command is still the light's and waits for its change: no change reported, not replaced. */
+    public boolean awaitingChange(final Light light, final IssuedCommand command) {
+        return pendingCommand(light.id()) == command;
+    }
+
+    /**
+     * The actuator is about to be asked for its status because of the command (HAS-295): a reading that
+     * then confirms the state from before means the command did not take. Noted before the request goes
+     * out - the answer may arrive before amx-service answers the request.
+     */
+    public void asked(final IssuedCommand command) {
+        command.asked.set(true);
+    }
+
+    /** The command is still the light's, and the light answered the status request without its change. */
+    public boolean notTaken(final Light light, final IssuedCommand command) {
+        return awaitingChange(light, command) && command.notTaken.get();
+    }
+
+    /** The light's command is one of the source, and the light answered the status request without its change. */
+    public boolean notTaken(final long id, final CommandSource source) {
+        final IssuedCommand command = pendingCommand(id);
+        return command != null && command.source().equals(source.value()) && command.notTaken.get();
     }
 
     public Mono<Void> observe(final Light light, final LightReading reading) {
         return restored.then(Mono.defer(() -> {
             //cut to what the column keeps: a restart must read back the same time
             final LocalDateTime now = LocalDateTime.now(clock).truncatedTo(ChronoUnit.MICROS);
-            final Command command = pendingCommand(light.id());
+            final IssuedCommand command = pendingCommand(light.id());
             final AtomicReference<LightStatus> before = new AtomicReference<>();
             final AtomicReference<Decision> decision = new AtomicReference<>();
             final Sinks.Empty<Void> done = Sinks.empty();
@@ -113,6 +144,9 @@ public class LightStateTracker {
 
             if (decision.get().changed() && command != null) {
                 commands.remove(light.id(), command);
+            } else if (command != null && command.asked.get()) {
+                //the answer to the status request of HAS-295: the state from before the command
+                command.notTaken.set(true);
             }
             if (Boolean.FALSE.equals(before.get().reachable())) {
                 log.info("Light {} ({}) is reachable again", light.id(), light.name());
@@ -187,8 +221,8 @@ public class LightStateTracker {
         return source.length() > SOURCE_LENGTH ? source.substring(0, SOURCE_LENGTH) : source;
     }
 
-    private Command pendingCommand(final long id) {
-        final Command command = commands.get(id);
+    private IssuedCommand pendingCommand(final long id) {
+        final IssuedCommand command = commands.get(id);
         if (command == null) {
             return null;
         }
@@ -230,7 +264,28 @@ public class LightStateTracker {
     record Decision(LightStatus status, boolean changed) {
     }
 
-    //a command of this service that is still waiting for the change it makes
-    private record Command(String source, Instant at) {
+    /**
+     * A command of this service that is still waiting for the change it makes. Compared by identity: a
+     * newer command for the same light is another one, even with the same source in the same instant.
+     */
+    public static final class IssuedCommand {
+
+        private final String source;
+        private final Instant at;
+        private final AtomicBoolean asked = new AtomicBoolean();
+        private final AtomicBoolean notTaken = new AtomicBoolean();
+
+        private IssuedCommand(final String source, final Instant at) {
+            this.source = source;
+            this.at = at;
+        }
+
+        public String source() {
+            return source;
+        }
+
+        Instant at() {
+            return at;
+        }
     }
 }
