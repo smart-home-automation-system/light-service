@@ -182,12 +182,17 @@ class AvailabilityMonitorTest {
         when(alertRepository.findAll()).thenReturn(Flux.just(new AvailabilityAlertEntity(110L, "light", "Main", "tobi",
             START.minusHours(2), START.minusHours(1))));
         check();
+        //HAS-296: the first pass after the start - still unreachable, not yet out again: not back
+        verify(notificationPublisher, never()).publishInfo(anyString());
+        verify(alertRepository, never()).deleteById(110L);
         now.set(START.plusMinutes(5));
 
         check();
 
         verify(notificationPublisher).publishReminder(anyString());
         verify(alertRepository).reminded(110L, START.plusMinutes(5));
+        verify(notificationPublisher, never()).publishInfo(anyString());
+        verify(notificationPublisher, never()).publishAlert(anyString());
     }
 
     //a sensor never heard since the start counts from the start; the PIR of the AMX system is not watched

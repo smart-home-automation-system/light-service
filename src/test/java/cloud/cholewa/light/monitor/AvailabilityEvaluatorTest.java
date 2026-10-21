@@ -78,6 +78,25 @@ class AvailabilityEvaluatorTest {
             Map.of(110L, light, 92L, sensor)).nothing()).isTrue();
     }
 
+    //HAS-296: after a restart the outage counts anew - a light still unreachable is not out again yet, and not back
+    //either: its alert stays open, without an info, a reminder or a new alert
+    @Test
+    void should_keep_the_alert_of_a_light_still_unreachable_but_not_long_enough_since_a_restart() {
+        final Alert alert = new Alert(110, Kind.LIGHT, "Main", "tobi", NOW.minusHours(2), NOW.minusMinutes(30));
+
+        assertThat(decide(List.of(new Watched(110, "Main", "tobi", Kind.LIGHT, NOW.minusMinutes(1), true)),
+            Map.of(110L, alert)).nothing()).isTrue();
+    }
+
+    //a sensor heard after its alert was opened is back - its since is its last report, never null
+    @Test
+    void should_announce_the_return_of_a_sensor_heard_since_the_start() {
+        final Alert alert = new Alert(92, Kind.PRESENCE_SENSOR, "Presence", "livia", NOW.minusHours(2), NOW.minusMinutes(10));
+
+        assertThat(decide(List.of(new Watched(92, "Presence", "livia", Kind.PRESENCE_SENSOR, NOW.minusMinutes(1), true)),
+            Map.of(92L, alert)).returns()).containsExactly(alert);
+    }
+
     //removed from the registry while out: nothing to say, the alert is closed
     @Test
     void should_forget_the_alert_of_a_device_no_longer_watched() {
