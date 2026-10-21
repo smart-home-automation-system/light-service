@@ -295,6 +295,9 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
   - **One message per pass and kind** - one alert naming every device newly out, one reminder (`reminder-every`,
     PT1H), one info for the returns - so a Wi-Fi outage is one message. A device removed from the registry while out
     is forgotten without a word.
+  - **A return is a light reachable now, a sensor heard since the start** (HAS-296): after a restart the outage of a
+    light counts anew, and for `offline-after` a light still unreachable is neither out nor back - its alert stays
+    open (it was announced back and out again five minutes later). The rule of blinds-service (HAS-250).
   - **The open alerts are in `light_availability_alert`** (V5, the shape of `temperature_sensor_alert` of
     heating-service), so a restart neither repeats an alert nor forgets a return; the table moves only once the
     broker took the message (a failed publish is tried again with the next pass, cut off after 30 s). Rows are
