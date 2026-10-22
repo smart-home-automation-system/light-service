@@ -267,4 +267,16 @@ class AvailabilityMonitorTest {
     private static LightStatus reachable(final boolean reachable) {
         return new LightStatus(false, null, null, null, START.minusHours(1), "external", reachable);
     }
+
+    //HAS-302: a read of the alerts that never answers - a dead database connection - completes the pass
+    //within its bound, below the minute between passes
+    @Test
+    void should_complete_a_check_that_hangs_within_its_bound() {
+        when(alertRepository.findAll()).thenReturn(Flux.never());
+
+        StepVerifier.withVirtualTime(monitor::check)
+            .expectSubscription()
+            .thenAwait(AvailabilityMonitor.LIMIT)
+            .verifyComplete();
+    }
 }

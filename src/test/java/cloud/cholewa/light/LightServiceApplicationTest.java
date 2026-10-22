@@ -38,10 +38,19 @@ class LightServiceApplicationTest {
         assertThat(applicationContext.getBeanNamesForType(ScheduledAnnotationBeanPostProcessor.class)).isEmpty();
     }
 
-    //the Shelly calls of the library reach the log only through the customizer
+    //cholewa-commons >= 1.10.0 logs every call of a WebClient of the injected builder - the clients of
+    //shelly-client included - from inside the reactive chain; a Logbook handler of the service's own
+    //would log every call twice (HAS-302)
     @Test
-    void should_put_the_shelly_calls_into_the_log() {
-        assertThat(applicationContext.getBeanNamesForType(ShellyHttpClientCustomizer.class))
-            .containsExactly("shellyCallsInTheLog");
+    void should_leave_the_logging_of_the_calls_to_the_library() {
+        assertThat(applicationContext.getBeanNamesForType(ShellyHttpClientCustomizer.class)).isEmpty();
+    }
+
+    //eight scheduled tasks: with one thread a hung pass stops all of them (blinds-service, 2026-10-22);
+    //the pool comes from cholewa-commons >= 1.11.0 (HAS-300, HAS-302)
+    @Test
+    void should_give_the_scheduled_tasks_a_pool() {
+        assertThat(applicationContext.getEnvironment().getProperty("spring.task.scheduling.pool.size", Integer.class))
+            .isEqualTo(10);
     }
 }

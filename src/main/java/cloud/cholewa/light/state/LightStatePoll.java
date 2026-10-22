@@ -1,5 +1,6 @@
 package cloud.cholewa.light.state;
 
+import cloud.cholewa.commons.scheduling.ScheduledPass;
 import cloud.cholewa.light.driver.Gen2Profiles;
 import cloud.cholewa.light.driver.Gen2Profiles.ColorComponent;
 import cloud.cholewa.light.model.Light;
@@ -17,6 +18,7 @@ import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.BiFunction;
@@ -42,6 +44,11 @@ public class LightStatePoll {
 
     //a few devices at once: a pass of devices that all time out still ends well within the minute
     private static final int CONCURRENCY = 4;
+    //Bounded (HAS-302): every device call has its client's timeout, the states are written to the
+    //database - a pass beyond these is hung (a dead connection, 2026-10-22) and ends there; the next
+    //one asks again. Below the fixed delays
+    static final Duration GEN1_LIMIT = Duration.ofSeconds(50);
+    static final Duration GEN2_LIMIT = Duration.ofMinutes(2);
 
     private final LightRegistry lightRegistry;
     private final LightStateTracker lightStateTracker;
@@ -51,16 +58,18 @@ public class LightStatePoll {
 
     @Scheduled(initialDelayString = "PT20S", fixedDelayString = "PT60S")
     Mono<Void> pollGen1() {
-        return Mono.defer(() -> pass(light -> light.binding() instanceof LightBinding.ShellyGen1, this::readGen1,
-            (light, e) -> lightStateTracker.reachability(light, false, e.toString())));
+        return ScheduledPass.bounded("light Gen1 poll", GEN1_LIMIT,
+            () -> pass(light -> light.binding() instanceof LightBinding.ShellyGen1, this::readGen1,
+                (light, e) -> lightStateTracker.reachability(light, false, e.toString())));
     }
 
     @Scheduled(initialDelayString = "PT40S", fixedDelayString = "PT5M")
     Mono<Void> reconcileGen2() {
-        return Mono.defer(() -> pass(light -> light.binding() instanceof LightBinding.ShellyGen2, this::readGen2,
-            (light, e) -> Mono.fromRunnable(() -> log.info("Reconciliation of light {} ({}) failed: {}",
-                    light.id(), light.name(), e.toString()))
-                .then(unknownIsUnreachable(light, e))));
+        return ScheduledPass.bounded("light Gen2 reconciliation", GEN2_LIMIT,
+            () -> pass(light -> light.binding() instanceof LightBinding.ShellyGen2, this::readGen2,
+                (light, e) -> Mono.fromRunnable(() -> log.info("Reconciliation of light {} ({}) failed: {}",
+                        light.id(), light.name(), e.toString()))
+                    .then(unknownIsUnreachable(light, e))));
     }
 
     //MQTT owns the reachability of a Gen2+ light - except while it has said nothing: its last will of before a

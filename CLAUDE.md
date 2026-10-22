@@ -25,10 +25,11 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
   `database-service` (device registry), `amx-service` (the Eaton lights) and `presence-service`
   (who is at home) over k8s DNS (`internal.service.*`). Everything is routed by `api-gateway-service`
   >= 0.8.0 (`/light`, `/light/**`, every method, HAS-265); the dashboard will branch on the codes.
-- Uses libraries: `cholewa-commons` 1.9.0 (pool, error contract, `DownstreamErrors`, connection
-  names, `NotificationPublisher`, `cholewa.required-properties`), `smart-home-sdk` 1.12.0
+- Uses libraries: `cholewa-commons` 1.11.0 (pool, error contract, `DownstreamErrors`, connection
+  names, `NotificationPublisher`, `cholewa.required-properties`, Logbook in the reactive chain, the
+  scheduler pool and `ScheduledPass`), `smart-home-sdk` 1.12.0
   (`SmartDevice` and `LightKind` of the registry; a zone as the channel of a presence sensor), `shelly-client` 2.1.0 (`ShellyGen1Client`,
-  `ShellyRpcClient`; `ShellyHttpClientCustomizer` puts their calls into the log).
+  `ShellyRpcClient`; their calls reach Logbook through the injected builder, HAS-302).
 - Database: own database `home-automation-light`, pool `database.pool.max-size: 2` (heating 2 /
   database 4 / water 2 / presence 2 / blinds 2 / weather 2 / light 2 = 16 of 22), pinned by
   `LightServiceApplicationTest`. Tables: `light_state` (`V1`, HAS-259), `light_room_rule` and
@@ -133,6 +134,34 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
   while a light of it is unknown. A room read carries `occupancy` (HAS-260, below).
 - **One instance, `Recreate`, never scaled**: the rules engine lives in its memory.
   `@EnableScheduling` is in `SchedulingConfig` under `@Profile("!test")`.
+- **Every scheduled task is bounded and they run on a pool** (HAS-302, after blinds-service froze on
+  2026-10-22: a pass waited for good on a dead database connection, Spring blocks the scheduler thread
+  until a reactive pass completes, and the one thread stopped every task of that service with the health
+  UP). The pool of ten comes from `cholewa-commons` 1.11.0 (pinned by `LightServiceApplicationTest`);
+  every `@Scheduled` method returns `ScheduledPass.bounded(task, LIMIT, ...)`, each pinned by a test that
+  hangs the pass:
+  - the rules engine and the empty house 55 s - their own 50 s (`PASS_TIMEOUT`) stay inside;
+  - the availability monitor 55 s (a broker so slow that a pass's publishes run into it leaves the alert
+    rows unwritten, and the next pass tries again, as after a failed publish); the Gen1 poll 50 s;
+  - the Gen2 reconciliation and the occupancy refresh 2 min, the registry 1 min; the Eaton status
+    requests 5 min (18 lights, each at most the timeouts of amx-service, about 20 s when the frame server
+    is there - a pass ended at the bound leaves the lights it never got to as restored).
+  - The tasks may now run **at the same time**: what they share is a `ConcurrentHashMap` or a `volatile`
+    (checked in HAS-302; `HouseState` was read beside the engine by the motion listener already - the
+    rules pass and the empty-house pass may now overlap in the minute the house turns empty, a window the
+    motion listener had opened before), and
+    together they may ask the pool of 2 connections for more than it has - an acquire waits up to the
+    pool's `max-acquire-time` (10 s) and only then fails that pass. A new scheduled task goes through
+    `ScheduledPass.bounded` too.
+  - **One write of a state is bounded too** (`LightStateTracker.WRITE_TIMEOUT`, 30 s, the finding of
+    HAS-301): the writes of a light queue one behind the other, and a write of the MQTT listener has no
+    bound of its own. At the bound it is a WARN (the state in memory is merged already), never a failure
+    of the caller - a poll would take that for an unreachable light.
+- **Logbook logs every call from the reactive chain, with its `traceId`** (`cholewa-commons` >= 1.10.0,
+  since HAS-302): the injected `WebClient.Builder` carries Logbook's exchange filter and the clients of
+  `shelly-client` are built from it, so the service adds **no Logbook handler of its own** - the
+  `LogbookClientHandler` of `WebClientConfig` and the `shellyCallsInTheLog` customizer are gone, or every
+  call would be logged twice; `LightServiceApplicationTest` pins that no `ShellyHttpClientCustomizer` is back.
 - **The test document points everything outward at port 1** (broker, database, the three
   services; `ApplicationYamlTest`): a context test must never switch a real light. A new
   outward address gets its line there.

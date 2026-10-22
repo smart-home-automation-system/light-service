@@ -1,5 +1,6 @@
 package cloud.cholewa.light.state;
 
+import cloud.cholewa.commons.scheduling.ScheduledPass;
 import cloud.cholewa.light.driver.EatonDriver;
 import cloud.cholewa.light.model.Light;
 import cloud.cholewa.light.model.LightBinding;
@@ -29,14 +30,22 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class EatonStatusRequests {
 
     private static final Duration PAUSE = Duration.ofSeconds(1);
+    static final Duration LIMIT = Duration.ofMinutes(5);
 
     private final LightRegistry lightRegistry;
     private final EatonDriver eatonDriver;
 
     private final AtomicBoolean done = new AtomicBoolean();
 
+    //Bounded (HAS-302): the Eaton lights one after the other, a second apart, each at most the connect and
+    //response timeouts of amx-service - about four minutes if none answers, some twenty seconds when the
+    //frame server is there. A pass ended at the bound leaves the lights it never got to as restored
     @Scheduled(initialDelayString = "PT1M", fixedDelayString = "PT5M")
     Mono<Void> askOnce() {
+        return ScheduledPass.bounded("light Eaton status requests", LIMIT, this::askAll);
+    }
+
+    private Mono<Void> askAll() {
         return Mono.defer(() -> {
             if (done.get() || lightRegistry.current().isEmpty()) {
                 return Mono.empty();

@@ -1,5 +1,6 @@
 package cloud.cholewa.light.state;
 
+import java.time.Duration;
 import cloud.cholewa.home.model.EatonGatewayType;
 import cloud.cholewa.home.model.LightKind;
 import cloud.cholewa.home.model.RoomName;
@@ -165,5 +166,32 @@ class LightStatePollTest {
     private static Light light(final long id, final LightKind kind, final LightBinding binding) {
         return new Light(id, "Light " + id, RoomName.OFFICE,
             binding instanceof LightBinding.Eaton ? SmartVendor.EATON : SmartVendor.SHELLY, binding, kind);
+    }
+
+    //HAS-302: the write of a state that never answers - a dead database connection, 2026-10-22 - ends the
+    //pass at its bound, below the minute between polls
+    @Test
+    void should_end_a_gen1_poll_that_never_completes_at_its_bound() {
+        when(gen1Client.status(anyString())).thenReturn(Mono.just(new Gen1DeviceStatus()
+            .relays(List.of(new Relay().ison(false)))));
+        when(tracker.observe(any(), any())).thenReturn(Mono.never());
+
+        StepVerifier.withVirtualTime(poll::pollGen1)
+            .expectSubscription()
+            .expectNoEvent(LightStatePoll.GEN1_LIMIT.minusSeconds(1))
+            .thenAwait(Duration.ofSeconds(1))
+            .verifyComplete();
+    }
+
+    @Test
+    void should_end_a_gen2_reconciliation_that_never_completes_at_its_bound() {
+        when(registry.current()).thenReturn(List.of(MAIN));
+        when(rpcClient.switchStatus(anyString(), any(Integer.class))).thenReturn(Mono.never());
+
+        StepVerifier.withVirtualTime(poll::reconcileGen2)
+            .expectSubscription()
+            .expectNoEvent(LightStatePoll.GEN2_LIMIT.minusSeconds(1))
+            .thenAwait(Duration.ofSeconds(1))
+            .verifyComplete();
     }
 }

@@ -67,4 +67,17 @@ class EatonStatusRequestsTest {
 
         verify(driver, never()).requestStatus(any());
     }
+
+    //HAS-302: a request amx-service never answers ends the pass at its bound, not the scheduler for good
+    @Test
+    void should_end_a_pass_that_never_completes_at_its_bound() {
+        when(registry.current()).thenReturn(List.of(BOILER));
+        when(driver.requestStatus(BOILER)).thenReturn(Mono.never());
+
+        StepVerifier.withVirtualTime(requests::askOnce)
+            .expectSubscription()
+            .expectNoEvent(EatonStatusRequests.LIMIT.minusSeconds(1))
+            .thenAwait(Duration.ofSeconds(1))
+            .verifyComplete();
+    }
 }

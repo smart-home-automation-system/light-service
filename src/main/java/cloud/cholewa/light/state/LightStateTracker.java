@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -45,6 +46,8 @@ public class LightStateTracker {
     //reports within a second or two, MQTT at once; a Gen1 light without actions only at the next poll,
     //and two polls lie more than their 60 s apart (fixedDelay counts from the end of a pass) - so twice that
     static final Duration COMMAND_WINDOW = Duration.ofMinutes(2);
+    //one write of a state: well above a healthy INSERT, below the bound of the Gen1 poll (HAS-302)
+    static final Duration WRITE_TIMEOUT = Duration.ofSeconds(30);
     static final String EXTERNAL = "external";
 
     //the width of the column: the word of a device is not trusted to be short
@@ -160,7 +163,17 @@ public class LightStateTracker {
             //every caller subscribes to what it gets; done is signalled however the write ends, a
             //cancelled one included, so one write that failed holds up none after it
             return (last.get() == null ? Mono.<Void>empty() : last.get().asMono())
-                .then(Mono.defer(() -> write(light, decision.get(), now)))
+                .then(Mono.defer(() -> write(light, decision.get(), now))
+                    //a write hung on a dead connection would hold every later write of the light - the
+                    //MQTT listener's has no bound of its own (HAS-302, the finding of HAS-301). The state in
+                    //memory is merged already; only its row is missing, so this is a WARN, not a failure of
+                    //the caller (a poll would take it for an unreachable light)
+                    .timeout(WRITE_TIMEOUT)
+                    .onErrorResume(TimeoutException.class, e -> {
+                        log.warn("The state of light {} ({}) was not stored within {}; the next report writes it",
+                            light.id(), light.name(), WRITE_TIMEOUT);
+                        return Mono.empty();
+                    }))
                 .doFinally(signal -> done.tryEmitEmpty());
         }));
     }

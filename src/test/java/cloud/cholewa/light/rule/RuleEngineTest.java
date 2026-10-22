@@ -404,4 +404,16 @@ class RuleEngineTest {
     private static LightStatus off() {
         return new LightStatus(false, null, null, null, EVENING.minusHours(5), "external", true);
     }
+
+    //HAS-302: a pass whose rules never come completes within its bound (its own 50 s inside), so the next
+    //pass happens
+    @Test
+    void should_complete_a_pass_that_hangs_within_its_bound() {
+        when(roomRuleService.byRoom()).thenReturn(Mono.never());
+
+        StepVerifier.withVirtualTime(engine::tick)
+            .expectSubscription()
+            .thenAwait(RuleEngine.LIMIT)
+            .verifyComplete();
+    }
 }
