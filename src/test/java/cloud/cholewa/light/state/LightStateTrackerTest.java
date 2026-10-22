@@ -1,5 +1,6 @@
 package cloud.cholewa.light.state;
 
+import static org.mockito.Mockito.doReturn;
 import cloud.cholewa.home.model.EatonGatewayType;
 import cloud.cholewa.home.model.LightKind;
 import cloud.cholewa.home.model.RoomName;
@@ -327,5 +328,25 @@ class LightStateTrackerTest {
         public Instant instant() {
             return now;
         }
+    }
+
+    //HAS-302 (the finding of HAS-301): a write hung on a dead connection held every later write of the
+    //light - the next one goes after the bound of the hung one, and the caller of the hung one is not failed
+    @Test
+    void should_let_the_next_write_of_a_light_go_once_a_hung_one_reaches_its_bound() {
+        //doReturn: when(...) would call the answer of setUp with a null argument
+        doReturn(Mono.never())
+            .doAnswer(invocation -> Mono.just(invocation.getArgument(0)))
+            .when(repository).save(any());
+
+        StepVerifier.withVirtualTime(() -> Mono.when(
+                tracker.observe(SOFA, LightReading.switched(true)),
+                tracker.observe(SOFA, LightReading.switched(false))))
+            .expectSubscription()
+            .expectNoEvent(LightStateTracker.WRITE_TIMEOUT.minusSeconds(1))
+            .thenAwait(Duration.ofSeconds(1))
+            .verifyComplete();
+
+        verify(repository, times(2)).save(any());
     }
 }

@@ -314,4 +314,15 @@ class EmptyHouseEngineTest {
     private static LightStatus off() {
         return new LightStatus(false, null, null, null, NOON.minusHours(5), "external", true);
     }
+
+    //HAS-302: a pass whose presence never answers completes within its bound, so the next pass happens
+    @Test
+    void should_complete_a_pass_that_hangs_within_its_bound() {
+        when(presenceClient.residents()).thenReturn(Mono.never());
+
+        StepVerifier.withVirtualTime(engine::tick)
+            .expectSubscription()
+            .thenAwait(EmptyHouseEngine.LIMIT)
+            .verifyComplete();
+    }
 }

@@ -2,6 +2,7 @@ package cloud.cholewa.light.emptyhouse;
 
 import cloud.cholewa.commons.error.model.ErrorId;
 import cloud.cholewa.commons.notification.NotificationPublisher;
+import cloud.cholewa.commons.scheduling.ScheduledPass;
 import cloud.cholewa.light.config.EmptyHouseProperties;
 import cloud.cholewa.light.database.model.RuleRunEntity;
 import cloud.cholewa.light.database.repository.RuleRunRepository;
@@ -53,6 +54,7 @@ import java.util.stream.Collectors;
 public class EmptyHouseEngine {
 
     static final Duration PASS_TIMEOUT = Duration.ofSeconds(50);
+    static final Duration LIMIT = Duration.ofSeconds(55);
     static final Duration PRESENCE_TIMEOUT = Duration.ofSeconds(10);
     static final Duration NOTIFICATION_TIMEOUT = Duration.ofSeconds(30);
     private static final DateTimeFormatter HOUR = DateTimeFormatter.ofPattern("HH:mm");
@@ -75,9 +77,15 @@ public class EmptyHouseEngine {
     private volatile boolean nightAnnounced;
     private volatile Boolean lastNight;
 
-    //Spring subscribes again to the same Mono for every run: everything is read inside the chain
+    //Spring subscribes again to the same Mono for every run: everything is read inside the chain.
+    //Bounded (HAS-302) a little above its own 50 s, which stays inside: the bound is the last word should
+    //anything outside that timeout hang
     @Scheduled(initialDelayString = "PT1M", fixedDelayString = "PT1M")
     Mono<Void> tick() {
+        return ScheduledPass.bounded("light empty house", LIMIT, this::tickOnce);
+    }
+
+    private Mono<Void> tickOnce() {
         return Mono.defer(() -> presenceClient.residents()
                 .timeout(PRESENCE_TIMEOUT)
                 .map(residents -> HouseState.judge(residents, now()))

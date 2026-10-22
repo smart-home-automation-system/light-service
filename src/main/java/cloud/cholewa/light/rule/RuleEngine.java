@@ -1,6 +1,7 @@
 package cloud.cholewa.light.rule;
 
 import cloud.cholewa.commons.error.model.ErrorId;
+import cloud.cholewa.commons.scheduling.ScheduledPass;
 import cloud.cholewa.home.model.RoomName;
 import cloud.cholewa.light.database.model.RuleRunEntity;
 import cloud.cholewa.light.config.EmptyHouseProperties;
@@ -62,6 +63,7 @@ public class RuleEngine {
 
     //a pass ends well before the next one is due
     static final Duration PASS_TIMEOUT = Duration.ofSeconds(50);
+    static final Duration LIMIT = Duration.ofSeconds(55);
     //a room that cannot be judged is named this often, not every minute
     static final Duration SKIP_LOG_EVERY = Duration.ofHours(1);
     //a BLU Motion reports its motion and its lux as two components of one packet, published one after the
@@ -87,9 +89,14 @@ public class RuleEngine {
     //zero in the tests
     Duration settleDelay = SETTLE;
 
-    //Spring subscribes again to the same Mono for every run: everything is read inside the chain
+    //Spring subscribes again to the same Mono for every run: everything is read inside the chain.
+    //Bounded (HAS-302) a little above its own 50 s, which stays inside
     @Scheduled(initialDelayString = "PT1M", fixedDelayString = "PT1M")
     Mono<Void> tick() {
+        return ScheduledPass.bounded("light rules engine", LIMIT, this::tickOnce);
+    }
+
+    private Mono<Void> tickOnce() {
         return Mono.defer(() -> roomRuleService.byRoom()
                 .doOnNext(ruleBook::replace)
                 .then()

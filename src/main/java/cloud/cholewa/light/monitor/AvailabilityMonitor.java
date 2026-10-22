@@ -1,6 +1,7 @@
 package cloud.cholewa.light.monitor;
 
 import cloud.cholewa.commons.notification.NotificationPublisher;
+import cloud.cholewa.commons.scheduling.ScheduledPass;
 import cloud.cholewa.home.model.RoomName;
 import cloud.cholewa.light.config.MonitorProperties;
 import cloud.cholewa.light.database.model.AvailabilityAlertEntity;
@@ -56,6 +57,9 @@ import java.util.stream.Stream;
 public class AvailabilityMonitor {
 
     static final Duration PUBLISH_TIMEOUT = Duration.ofSeconds(30);
+    //below the fixed delay; a healthy publish takes milliseconds - a broker so slow that three publishes of one
+    //pass run into it leaves the alert rows unwritten, and the next pass tries again, as after a failed publish
+    static final Duration LIMIT = Duration.ofSeconds(55);
     static final int MAX_LISTED = 10;
     private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
 
@@ -98,8 +102,14 @@ public class AvailabilityMonitor {
 
     //Spring subscribes again to the same Mono for every run: everything is read inside the chain. Two minutes
     //in: the lights and the sensors are known by then, and a Gen1 poll has run
+    //Bounded (HAS-302): the trackers, the alerts of the database and at most a notification a kind (each cut
+    //off after 30 s) - a pass beyond this is hung and ends; the next one judges again
     @Scheduled(initialDelayString = "PT2M", fixedDelayString = "PT1M")
     Mono<Void> check() {
+        return ScheduledPass.bounded("light availability monitor", LIMIT, this::checkOnce);
+    }
+
+    private Mono<Void> checkOnce() {
         return Mono.defer(() -> {
                 //before both registries were read every device would look removed, and its alert be forgotten
                 if (!lightRegistry.loaded() || !occupancyRegistry.loaded()) {
