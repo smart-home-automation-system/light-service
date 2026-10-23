@@ -105,6 +105,56 @@ class LightStateTrackerTest {
             .changed()).isFalse();
     }
 
+    //HAS-269: the colour keeper of the HALL UP lamps stores the colour of the hour every minute while they are off
+    @Test
+    void should_store_a_color_set_while_off_without_taking_it_for_a_switch() {
+        final LightStatus offSinceMorning = new LightStatus(false, 100, List.of(255, 255, 255), null, EVENING.minusHours(10),
+            "rule", true);
+
+        final LightStateTracker.Decision keeper = LightStateTracker.decide(
+            offSinceMorning, new LightReading(false, 100, List.of(130, 0, 255), null, "loopback"), EVENING, null);
+
+        assertThat(keeper.changed()).isTrue();
+        assertThat(keeper.status())
+            .isEqualTo(new LightStatus(false, 100, List.of(130, 0, 255), null, EVENING.minusHours(10), "rule", true));
+    }
+
+    @Test
+    void should_still_take_a_switch_or_a_command_with_a_color_as_a_change_of_who_and_when() {
+        final LightStatus off = new LightStatus(false, 100, List.of(255, 255, 255), null, EVENING.minusHours(10), "rule", true);
+
+        final LightStateTracker.Decision switchedOn = LightStateTracker.decide(
+            off, new LightReading(true, 100, List.of(130, 0, 255), null, "HTTP_in"), EVENING, null);
+        assertThat(switchedOn.status().changedAt()).isEqualTo(EVENING);
+        assertThat(switchedOn.status().source()).isEqualTo("HTTP_in");
+
+        final LightStateTracker.Decision commanded = LightStateTracker.decide(
+            off, new LightReading(false, 40, List.of(255, 0, 0), null, "HTTP_in"), EVENING, "dashboard");
+        assertThat(commanded.status().changedAt()).isEqualTo(EVENING);
+        assertThat(commanded.status().source()).isEqualTo("dashboard");
+
+        final LightStateTracker.Decision firstReport = LightStateTracker.decide(
+            LightStatus.unknown(), new LightReading(false, 40, List.of(255, 0, 0), null, "loopback"), EVENING, null);
+        assertThat(firstReport.status().changedAt()).isEqualTo(EVENING);
+        assertThat(firstReport.status().source()).isEqualTo("loopback");
+    }
+
+    //the row of the stored colour keeps the time the light was switched off - what a restart reads back
+    @Test
+    void should_open_the_row_of_a_color_set_while_off_with_the_time_of_the_last_switch() {
+        tracker.observe(STRIP, new LightReading(false, 100, List.of(255, 255, 255), null, "HTTP_in"))
+            .as(StepVerifier::create).verifyComplete();
+        clock.advance(Duration.ofMinutes(1));
+        tracker.observe(STRIP, new LightReading(false, 100, List.of(0, 255, 0), null, "loopback"))
+            .as(StepVerifier::create).verifyComplete();
+
+        final ArgumentCaptor<LightStateEntity> rows = ArgumentCaptor.forClass(LightStateEntity.class);
+        verify(repository, times(2)).save(rows.capture());
+        assertThat(rows.getAllValues()).extracting(LightStateEntity::rgb).containsExactly("255,255,255", "0,255,0");
+        assertThat(rows.getAllValues()).extracting(LightStateEntity::startedAt).containsOnly(EVENING);
+        assertThat(rows.getAllValues()).extracting(LightStateEntity::source).containsOnly("HTTP_in");
+    }
+
     //the same state again moves nothing but last_checked_at, and fills in what the report adds
     @Test
     void should_confirm_the_same_state_and_keep_when_and_who() {

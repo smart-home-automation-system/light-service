@@ -248,7 +248,8 @@ public class LightStateTracker {
 
     //Merges one reading into the state known before it. Switched on or off is a change; so is a
     //brightness or a color that differs from the one known - a light dimmed from a wall button, or
-    //while off, the level it will come back at. What the reading does not say is kept from before: an
+    //while off, the level it will come back at (stored, but by itself no switch: the light keeps when and by
+    //whom it was last switched, HAS-269). What the reading does not say is kept from before: an
     //Eaton dimmer that reports 0 keeps its last brightness, a Gen1 action its brightness and color.
     //The rest confirms what is known and fills in what the reading adds
     static Decision decide(
@@ -266,12 +267,25 @@ public class LightStateTracker {
             || differs(reading.rgb(), previous.rgb())
             || differs(reading.white(), previous.white());
 
+        if (changed && command == null && staysOff(previous, reading)) {
+            //HAS-269: a level or a color stored in a light that stays off (the colour keeper of the HALL UP
+            //lamps sets the colour they come back with every minute) is stored, but it switched nothing - so
+            //when and by whom the light was last switched stay, and neither the manual hold of the rules nor
+            //the person-touched check of the empty house starts from it
+            return new Decision(new LightStatus(false, brightness, rgb, white, previous.changedAt(),
+                previous.source(), true), true);
+        }
         if (changed) {
             return new Decision(new LightStatus(reading.on(), brightness, rgb, white, now,
                 command != null ? command : deviceSource(reading), true), true);
         }
         return new Decision(new LightStatus(reading.on(), brightness, rgb, white, previous.changedAt(),
             previous.source(), true), false);
+    }
+
+    //known off before and still off - an unknown light, or one switched off at this reading, is switched
+    private static boolean staysOff(final LightStatus previous, final LightReading reading) {
+        return Boolean.FALSE.equals(previous.on()) && !reading.on() && previous.changedAt() != null;
     }
 
     //a value the reading did not say, or one never known before, is no difference
