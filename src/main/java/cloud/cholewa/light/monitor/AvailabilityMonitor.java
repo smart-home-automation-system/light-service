@@ -132,7 +132,7 @@ public class AvailabilityMonitor {
             .filter(light -> !(light.binding() instanceof LightBinding.Eaton))
             .toList();
         return Flux.fromIterable(shelly)
-            .concatMap(light -> lightStateTracker.status(light.id()).map(status -> {
+            .concatMap(light -> lightStateTracker.status(light).map(status -> {
                 if (Boolean.FALSE.equals(status.reachable())) {
                     unreachableSince.putIfAbsent(light.id(), now);
                 } else {

@@ -29,4 +29,12 @@ public record LightStatus(
     public LightStatus withReachable(final Boolean reachable) {
         return new LightStatus(on, brightness, rgb, white, changedAt, source, reachable);
     }
+
+    /**
+     * The same state with {@code on} left out: what is kept was not confirmed by the device (HAS-308) -
+     * when it began and who changed it stay, they are history, not the present.
+     */
+    public LightStatus withoutOn() {
+        return new LightStatus(null, brightness, rgb, white, changedAt, source, reachable);
+    }
 }

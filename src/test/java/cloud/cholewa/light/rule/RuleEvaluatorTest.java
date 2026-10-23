@@ -80,12 +80,42 @@ class RuleEvaluatorTest {
                 .containsExactly(new RuleAction(HALL_LEFT, false, RuleReason.AUTO_OFF, null));
         }
 
-        //a light that is off or not known is not switched off
         @Test
-        void should_leave_a_light_that_is_off_or_not_known() {
+        void should_leave_a_light_that_is_off() {
+            final RoomSnapshot room = bedroom(empty(EVENING.minusHours(1), null),
+                light(BEDROOM_CEILING, off(EVENING.minusHours(3))));
+
+            assertThat(RuleEvaluator.tick(room, EVENING).actions()).isEmpty();
+        }
+
+        //HAS-308 (owner, 2026-10-22): an off to a light that may be on is harmless - the kitchen bar the AMX could
+        //not confirm stayed on all night
+        @Test
+        void should_switch_off_a_light_not_known_to_be_off() {
             final RoomSnapshot room = bedroom(empty(EVENING.minusHours(1), null),
                 light(BEDROOM_CEILING, off(EVENING.minusHours(3))),
                 light(BEDROOM_LAMP, LightStatus.unknown()));
+
+            assertThat(RuleEvaluator.tick(room, EVENING).actions())
+                .containsExactly(new RuleAction(BEDROOM_LAMP, false, RuleReason.AUTO_OFF, null));
+        }
+
+        //the hold stands on the change kept, known state or not: a person switched it 20 minutes ago, the hold is 60
+        @Test
+        void should_leave_a_light_not_known_but_held() {
+            final RoomSnapshot room = bedroom(empty(EVENING.minusHours(1), null),
+                light(BEDROOM_LAMP, new LightStatus(null, null, null, null, EVENING.minusMinutes(20), "external", null)));
+
+            assertThat(RuleEvaluator.tick(room, EVENING).actions()).isEmpty();
+            assertThat(RuleEvaluator.tick(room, EVENING.plusMinutes(40)).actions())
+                .containsExactly(new RuleAction(BEDROOM_LAMP, false, RuleReason.AUTO_OFF, null));
+        }
+
+        //once: a light not known, sent its off, gets no other until it reports a change
+        @Test
+        void should_send_a_light_not_known_its_off_once() {
+            final RoomSnapshot room = bedroom(empty(EVENING.minusHours(1), null),
+                new LightSnapshot(BEDROOM_LAMP, LightStatus.unknown(), EVENING.minusMinutes(1)));
 
             assertThat(RuleEvaluator.tick(room, EVENING).actions()).isEmpty();
         }

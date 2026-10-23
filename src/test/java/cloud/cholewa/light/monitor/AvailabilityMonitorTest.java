@@ -97,7 +97,7 @@ class AvailabilityMonitorTest {
         when(lightRegistry.loaded()).thenReturn(true);
         when(occupancyRegistry.loaded()).thenReturn(true);
         when(lightRegistry.current()).thenReturn(List.of(TOBI_MAIN, LIVIA_DESK, STAIRS));
-        when(lightStateTracker.status(anyLong())).thenReturn(Mono.just(reachable(true)));
+        when(lightStateTracker.status(any(Light.class))).thenReturn(Mono.just(reachable(true)));
         when(occupancyRegistry.sensors()).thenReturn(List.of(PRESENCE, PIR));
         when(occupancyTracker.room(RoomName.LIVIA)).thenAnswer(invocation -> occupancy(now.get()));
         when(alertRepository.findAll()).thenReturn(Flux.empty());
@@ -112,8 +112,8 @@ class AvailabilityMonitorTest {
     //two Shelly lights out together: one alert naming both, two rows; the Eaton light is never asked
     @Test
     void should_announce_every_light_out_in_one_alert() {
-        when(lightStateTracker.status(TOBI_MAIN.id())).thenReturn(Mono.just(reachable(false)));
-        when(lightStateTracker.status(LIVIA_DESK.id())).thenReturn(Mono.just(reachable(false)));
+        when(lightStateTracker.status(TOBI_MAIN)).thenReturn(Mono.just(reachable(false)));
+        when(lightStateTracker.status(LIVIA_DESK)).thenReturn(Mono.just(reachable(false)));
 
         check();
         now.set(START.plusMinutes(5));
@@ -123,13 +123,13 @@ class AvailabilityMonitorTest {
             "Not available: the light Main (tobi, 110) does not answer since 2026-10-20 12:00 (5 min); "
                 + "the light Desk (livia, 113) does not answer since 2026-10-20 12:00 (5 min).");
         verify(entityTemplate, times(2)).insert(any(AvailabilityAlertEntity.class));
-        verify(lightStateTracker, never()).status(STAIRS.id());
+        verify(lightStateTracker, never()).status(STAIRS);
     }
 
     //the broker away: nothing written, the alert tried again with the next pass
     @Test
     void should_write_nothing_when_the_alert_is_not_published() {
-        when(lightStateTracker.status(TOBI_MAIN.id())).thenReturn(Mono.just(reachable(false)));
+        when(lightStateTracker.status(TOBI_MAIN)).thenReturn(Mono.just(reachable(false)));
         when(notificationPublisher.publishAlert(anyString())).thenReturn(Mono.error(new IllegalStateException("broker away")));
         check();
         now.set(START.plusMinutes(5));
@@ -142,7 +142,7 @@ class AvailabilityMonitorTest {
     //a reachability not known after a start is not judged
     @Test
     void should_not_judge_a_light_whose_reachability_is_not_known() {
-        when(lightStateTracker.status(TOBI_MAIN.id())).thenReturn(Mono.just(LightStatus.unknown()));
+        when(lightStateTracker.status(TOBI_MAIN)).thenReturn(Mono.just(LightStatus.unknown()));
         check();
         now.set(START.plusHours(1));
 
@@ -154,7 +154,7 @@ class AvailabilityMonitorTest {
     //after a restart the light is not known yet: its alert stays open, no false return
     @Test
     void should_keep_the_alert_of_a_light_not_known_after_a_restart() {
-        when(lightStateTracker.status(TOBI_MAIN.id())).thenReturn(Mono.just(LightStatus.unknown()));
+        when(lightStateTracker.status(TOBI_MAIN)).thenReturn(Mono.just(LightStatus.unknown()));
         when(alertRepository.findAll()).thenReturn(Flux.just(new AvailabilityAlertEntity(110L, "light", "Main", "tobi",
             START.minusHours(1), START.minusMinutes(30))));
 
@@ -178,7 +178,7 @@ class AvailabilityMonitorTest {
 
     @Test
     void should_remind_an_outage_after_an_hour() {
-        when(lightStateTracker.status(TOBI_MAIN.id())).thenReturn(Mono.just(reachable(false)));
+        when(lightStateTracker.status(TOBI_MAIN)).thenReturn(Mono.just(reachable(false)));
         when(alertRepository.findAll()).thenReturn(Flux.just(new AvailabilityAlertEntity(110L, "light", "Main", "tobi",
             START.minusHours(2), START.minusHours(1))));
         check();

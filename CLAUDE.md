@@ -126,9 +126,27 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
     the state the light is already in (a person's "on" for a lit light) is reported as *did not take*.
   - Eaton: the `status` event on `eaton.<gateway>.<point>` - the gateway of the light's own binding,
     so a blind on the same point of the other gateway is never taken for it; a switch `0` / `1`, a
-    dimmer its level. **`EatonStatusRequests` asks every Eaton light once** after the start (a minute
-    in, a second apart, `POST /home/amx/eaton/lights/{point}/status` - amx-service ≥ 2.4.0); its
-    answer is a status event like any other. A light that cannot be asked is a WARN, never repeated.
+    dimmer its level. **An Eaton light is known only once the AMX confirmed it** (HAS-308, after
+    2026-10-22: the AMX away from 15:55, every status request of the start failed, the kitchen bar stood
+    `off` restored from 19.10 while it was on - the dashboard showed it off, auto-off never touched it):
+    - `LightStateTracker.isConfirmed(light)`: a Shelly light always; an Eaton light once it was heard
+      (`observe()` - a frame or a status answer, a confirmation of the kept state included) after the
+      start **and** after the last `eatonUnavailable()`. Not confirmed, `status(light)` answers its state
+      without `on` (`LightStatus.withoutOn()`); `changedAt` and `source` stay, so the manual hold holds.
+      **`status` takes the `Light`, not the id** - the binding decides.
+    - `EatonDriver` turns an answer of amx-service carrying `FRAME_SERVER_UNAVAILABLE` (a command or a
+      status request) into `eatonUnavailable()`: every Eaton light unknown until heard again; one WARN
+      per loss. Any other refusal (`FRAME_SERVER_TIMEOUT`, `FRAME_REFUSED`, a 5xx) says nothing of the
+      link.
+    - **`EatonStatusRequests` asks every Eaton light not confirmed** - a minute after the start, then every
+      five minutes until it answers (one after the other, a second apart, `POST
+      /home/amx/eaton/lights/{point}/status` - amx-service ≥ 2.4.0); its answer is a status event like any
+      other. When every one is confirmed, **one light in turn is asked all the same - the probe of the
+      link**: without it the AMX leaving while nobody switches anything would never be noticed (one
+      telegram every five minutes). `FRAME_SERVER_UNAVAILABLE` ends the pass (INFO): the others would be
+      refused alike. Any other failure is a WARN, the light is asked again with the next pass.
+    - So with the AMX away the Eaton lights lose `on` within five minutes (at once on a command), and
+      come back by themselves within five minutes after it returns.
 - **The reads leave out what is not known** (`LightView`, `NON_NULL`): nothing before the first
   report, no brightness of a relay, no `reachable` after a restart; a room's `anyOn` is left out
   while a light of it is unknown. A room read carries `occupancy` (HAS-260, below).
@@ -145,7 +163,7 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
     rows unwritten, and the next pass tries again, as after a failed publish); the Gen1 poll 50 s;
   - the Gen2 reconciliation and the occupancy refresh 2 min, the registry 1 min; the Eaton status
     requests 5 min (18 lights, each at most the timeouts of amx-service, about 20 s when the frame server
-    is there - a pass ended at the bound leaves the lights it never got to as restored).
+    is there - a pass ended at the bound leaves the lights it never got to for the next pass).
   - The tasks may now run **at the same time**: what they share is a `ConcurrentHashMap` or a `volatile`
     (checked in HAS-302; `HouseState` was read beside the engine by the motion listener already - the
     rules pass and the empty-house pass may now overlap in the minute the house turns empty, a window the
@@ -254,13 +272,19 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
     The reads answer it as `heldUntil` while it lasts (by the `RuleBook`; left out with no rule).
   - **Once**: a light the engine sent a command to gets no other until it reports a change (`changedAt` after the
     command) - a failed or unconfirmed command is not repeated every minute; the memory of it is lost with a
-    restart. **One more command** (HAS-295, owner 2026-10-20): a command of the rules the light did not take
+    restart. **A command refused while the AMX could not confirm the light** (HAS-308: it failed, and
+    `isConfirmed` is false after it - `FRAME_SERVER_UNAVAILABLE` made the light unknown) keeps its mark while
+    the AMX is away (`waitingForAmx`: one refused command, not one a minute) and loses it once the light is
+    confirmed again (`releaseAfterAmx`, before the decision) - otherwise the kitchen bar of 2026-10-22, on
+    all along and confirmed on without a change, would never get its auto-off. A failure of a confirmed light
+    keeps the guard as before. **One more command** (HAS-295, owner 2026-10-20): a command of the rules the light did not take
     (`notTaken(id, RULE)`) is released for the next decision (`releaseNotTaken`) and spent only by a decision
     that sends it (`keepUnusedReleases` puts the guard back otherwise - a missed motion-on is not decided again
     by the pass); `retriedAt` keeps it to one until the light reports a change. The empty house and a person's
     commands are never sent once more. A pass cut off by its 50 s leaves the lights it never got to unmarked (the one in flight stays). The decision and the note of its commands are taken together (one lock), so a motion and the pass
     never both command a light.
-  - **Auto-off**: lights known on and not held, `autoOffDelayMinutes` after the room is empty - with a presence
+  - **Auto-off**: lights on **or not known to be off** (HAS-308, owner 2026-10-22: an off to a light that may be on
+    is harmless) and not held, `autoOffDelayMinutes` after the room is empty - with a presence
     sensor from its `since` (or a later motion), with motion sensors only from the last motion. A presence
     sensor not known, a motion sensor not reachable, or no motion since the start: the room is skipped and named
     once an hour (INFO).

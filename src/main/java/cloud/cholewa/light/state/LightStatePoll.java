@@ -81,7 +81,7 @@ public class LightStatePoll {
         if (!(e instanceof ShellyCallException)) {
             return Mono.empty();
         }
-        return lightStateTracker.status(light.id())
+        return lightStateTracker.status(light)
             .filter(status -> status.reachable() == null)
             .flatMap(status -> lightStateTracker.reachability(light, false, "no MQTT word and " + e));
     }

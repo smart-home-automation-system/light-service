@@ -9,6 +9,7 @@ import cloud.cholewa.light.error.LightException;
 import cloud.cholewa.light.model.Color;
 import cloud.cholewa.light.model.Light;
 import cloud.cholewa.light.model.LightBinding;
+import cloud.cholewa.light.state.LightStateTracker;
 import mockwebserver3.MockResponse;
 import mockwebserver3.MockWebServer;
 import mockwebserver3.RecordedRequest;
@@ -26,6 +27,10 @@ import java.io.IOException;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 
 class EatonDriverTest {
 
@@ -34,12 +39,13 @@ class EatonDriverTest {
 
     private MockWebServer server;
     private EatonDriver driver;
+    private final LightStateTracker tracker = mock(LightStateTracker.class);
 
     @BeforeEach
     void setUp() throws IOException {
         server = new MockWebServer();
         server.start();
-        driver = new EatonDriver(WebClient.builder().baseUrl("http://localhost:" + server.getPort()).build());
+        driver = new EatonDriver(WebClient.builder().baseUrl("http://localhost:" + server.getPort()).build(), tracker);
     }
 
     @AfterEach
@@ -98,6 +104,36 @@ class EatonDriverTest {
                 .hasMessageContaining("amx-service answered 502")
                 .hasMessageContaining("FRAME_SERVER_UNAVAILABLE"))
             .verify();
+    }
+
+    //HAS-308: the frame server away makes every Eaton light unknown - a command and a status request alike
+    @Test
+    void should_tell_the_state_that_the_amx_is_away() {
+        server.enqueue(new MockResponse.Builder().code(502)
+            .addHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+            .body("{\"errors\":[{\"message\":\"AMX frame server unavailable\",\"code\":\"FRAME_SERVER_UNAVAILABLE\"}]}")
+            .build());
+
+        driver.requestStatus(SOFA).as(StepVerifier::create)
+            .expectErrorSatisfies(e -> assertThat(((EatonDriver.AmxCallException) e).frameServerUnavailable()).isTrue())
+            .verify();
+
+        verify(tracker).eatonUnavailable(anyString());
+    }
+
+    //any other refusal says nothing of the link: a timeout of the frame server may have carried the frame out
+    @Test
+    void should_leave_the_state_alone_on_another_refusal() {
+        server.enqueue(new MockResponse.Builder().code(504)
+            .addHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+            .body("{\"errors\":[{\"message\":\"AMX frame server timeout\",\"code\":\"FRAME_SERVER_TIMEOUT\"}]}")
+            .build());
+
+        driver.turn(SOFA, false).as(StepVerifier::create)
+            .expectErrorSatisfies(e -> assertThat(((EatonDriver.AmxCallException) e).frameServerUnavailable()).isFalse())
+            .verify();
+
+        verify(tracker, never()).eatonUnavailable(anyString());
     }
 
     @Test

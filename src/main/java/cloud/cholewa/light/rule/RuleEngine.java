@@ -85,6 +85,10 @@ public class RuleEngine {
     private final Map<Long, LocalDateTime> commandedAt = new ConcurrentHashMap<>();
     //the lights whose command was released once because it did not take, and when (HAS-295)
     private final Map<Long, LocalDateTime> retriedAt = new ConcurrentHashMap<>();
+    //the lights whose command failed while the AMX could not confirm them, with the mark of that command
+    //(HAS-308): the mark holds while the AMX is away - one refused command, not one a minute - and goes once
+    //the light is confirmed again, so its state is judged anew
+    private final Map<Long, LocalDateTime> waitingForAmx = new ConcurrentHashMap<>();
     private final Map<RoomName, LocalDateTime> skipLoggedAt = new ConcurrentHashMap<>();
     //zero in the tests
     Duration settleDelay = SETTLE;
@@ -168,12 +172,13 @@ public class RuleEngine {
             return Mono.just(new Decision(List.of(), now()));
         }
         return Flux.fromIterable(lights)
-            .concatMap(light -> lightStateTracker.status(light.id()).map(status -> new LightState(light, status)))
+            .concatMap(light -> lightStateTracker.status(light).map(status -> new LightState(light, status)))
             .collectList()
             .map(states -> {
                 synchronized (commandedAt) {
                     final LocalDateTime now = now();
                     final Map<Long, LocalDateTime> released = new HashMap<>();
+                    states.forEach(state -> releaseAfterAmx(room, state));
                     states.forEach(state -> releaseNotTaken(state, released));
                     final RoomSnapshot snapshot = new RoomSnapshot(rule, occupancyTracker.room(room), states.stream()
                         .map(state -> new LightSnapshot(state.light(), state.status(), commandedAt.get(state.light().id())))
@@ -194,13 +199,29 @@ public class RuleEngine {
         return Flux.fromIterable(decision.actions())
             .concatMap(action -> {
                 started.add(action.light().id());
-                return execute(room, action);
+                return execute(room, action, decision.at());
             })
             .then()
             .doOnCancel(() -> decision.actions().stream()
                 .map(action -> action.light().id())
                 .filter(id -> !started.contains(id))
                 .forEach(id -> commandedAt.remove(id, decision.at())));
+    }
+
+    //A command refused while the AMX could not confirm the light never reached it (HAS-308): once the light is
+    //confirmed again, the mark of that command goes, and the decision about to be taken judges the light as it
+    //is - the kitchen bar of 2026-10-22, on all along, gets its auto-off after the AMX is back
+    private void releaseAfterAmx(final RoomName room, final LightState state) {
+        final long id = state.light().id();
+        final LocalDateTime mark = waitingForAmx.get(id);
+        if (mark == null || !lightStateTracker.isConfirmed(state.light())) {
+            return;
+        }
+        waitingForAmx.remove(id, mark);
+        if (commandedAt.remove(id, mark)) {
+            log.info("Rule of the {}: light {} ({}) is confirmed by the AMX again, its refused command is judged anew",
+                room.getValue(), id, state.light().name());
+        }
     }
 
     //A command of the rules that did not take is released for the decision about to be taken, so it may send
@@ -255,7 +276,7 @@ public class RuleEngine {
         }
     }
 
-    private Mono<Void> execute(final RoomName room, final RuleAction action) {
+    private Mono<Void> execute(final RoomName room, final RuleAction action, final LocalDateTime mark) {
         final Light light = action.light();
         final LocalDateTime at = LocalDateTime.now(clock).truncatedTo(ChronoUnit.MICROS);
         log.info("Rule of the {}: light {} ({}) {} by {}", room.getValue(), light.id(), light.name(),
@@ -267,6 +288,11 @@ public class RuleEngine {
             .onErrorResume(e -> {
                 log.error("Rule of the {}: light {} ({}) did not take the command: {}", room.getValue(), light.id(),
                     light.name(), e.getMessage());
+                //refused while the AMX cannot confirm the light (FRAME_SERVER_UNAVAILABLE has made it unknown by
+                //now): its mark waits for the AMX to come back (HAS-308)
+                if (!lightStateTracker.isConfirmed(light)) {
+                    waitingForAmx.put(light.id(), mark);
+                }
                 //the width of the column
                 final String code = e instanceof LightException failure
                     ? ErrorId.codeOf(failure.getError())
