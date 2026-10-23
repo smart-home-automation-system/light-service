@@ -64,7 +64,7 @@ Everything is non-blocking (Spring WebFlux / Reactor):
   |---|---|---|
   | Shelly Gen2+ | its MQTT status (`switch`, `light`, `rgb` / `rgbw`) at once; `GetStatus` every 5 minutes reconciles | its `online` topic |
   | Shelly Gen1 | `/status` every 60 s; `GET /events/gen1` when the device calls it (its `out_on_url` / `out_off_url`) | a poll that fails |
-  | Eaton | the `status` event of `amx-service` (a switch on or off, a dimmer its level); every Eaton light is asked once after the start, and once after a command whose change was not reported within 5 s | - |
+  | Eaton | the `status` event of `amx-service` (a switch on or off, a dimmer its level); every Eaton light not confirmed is asked every 5 minutes until it answers (below), and once after a command whose change was not reported within 5 s | - |
 
   It is kept in memory and stored in `light_state` - a row when a light is switched or its
   brightness or color changes, a confirmation moves `last_checked_at` - and read back at the
@@ -76,6 +76,15 @@ Everything is non-blocking (Spring WebFlux / Reactor):
   for its status once; its answer arrives as the usual event. An answer without the change means the
   command did not take, no answer leaves it unconfirmed - a WARN each, the state left as the light
   reports it. A command that failed is not confirmed, and a Shelly light needs no confirmation.
+
+  **An Eaton light is known only once the AMX confirmed it** (HAS-308): it reports only when switched,
+  and nothing while the AMX is away. Its state read back at the start has no `on` until a frame or a
+  status answer of the light arrives; `changedAt` and `source` stay. An Eaton light not confirmed is
+  asked for its status a minute after the start and every 5 minutes after, one light a second, until it
+  answers; when every one is confirmed, one light in turn is asked all the same - the probe of the
+  link. An answer `FRAME_SERVER_UNAVAILABLE` of `amx-service`, to a command or a status request, makes
+  every Eaton light unknown until it is heard again, so with the AMX away the reads have no `on` for
+  them, and they come back by themselves within 5 minutes after it returns.
 
 - **The occupancy of a room** comes from the switched-on presence and motion sensors of the registry
   and the BTHome gateways (read every 5 minutes), held in memory only - **after a start every room is
@@ -244,7 +253,7 @@ The rules run at every fresh motion (the reaction runs apart from the event, a s
 lux of the same sensor packet counts) and in a pass every minute, which also reads the rules again; every
 write of a rule takes effect at once. Commands go through the same drivers with `source=rule`.
 
-- **Auto-off**: every light known to be on and not held goes off `autoOffDelayMinutes` after the room is
+- **Auto-off**: every light that is on, or not known to be off (HAS-308), and not held goes off `autoOffDelayMinutes` after the room is
   empty - with a presence sensor from when it said nobody is there (or a later motion), with motion
   sensors only from the last motion. A room whose presence sensor is not known, whose motion sensor is not
   reachable, or which saw no motion since the start is skipped and logged once an hour.
@@ -257,7 +266,9 @@ write of a rule takes effect at once. Commands go through the same drivers with 
 - **Manual hold**: a light whose last change was not this service's (a wall switch, the Shelly app, an AMX
   panel, the dashboard) is left alone for `manualHoldMinutes` after that change - `heldUntil` in the reads.
 - **Once**: a light gets no second command until it reports a change; a command that failed is not
-  repeated every minute. **One exception** (HAS-295): an Eaton light that answered the status request
+  repeated every minute - but one refused while the AMX could not confirm the light is judged anew once
+  the AMX confirms it again (HAS-308: the kitchen bar, on all along, gets its auto-off after the AMX is
+  back). **One exception** (HAS-295): an Eaton light that answered the status request
   with its state from before the command did not take it, and the next decision that sends it gets it
   once more; after a second such answer nothing more until the light reports a change - a broken
   actuator gets two commands at most. Only commands of the rules are sent once more, never those of the
