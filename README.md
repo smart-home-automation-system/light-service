@@ -265,8 +265,8 @@ write of a rule takes effect at once. Commands go through the same drivers with 
   unless a presence sensor of the room says somebody is there or is not known.
 - **Manual hold**: a light whose last change was not this service's (a wall switch, the Shelly app, an AMX
   panel, the dashboard) is left alone for `manualHoldMinutes` after that change - `heldUntil` in the reads.
-  A colour or a level stored in a light that stays off (a script of the device preparing the colour it comes
-  back with) is no change of this kind: the light keeps when and by whom it was last switched.
+  A colour or a level the device's own script set (source `loopback` - the HALL UP lamps pick the colour of
+  the hour once switched on) is no change of this kind: the light keeps when and by whom it was switched.
 - **Once**: a light gets no second command until it reports a change; a command that failed is not
   repeated every minute - but one refused while the AMX could not confirm the light is judged anew once
   the AMX confirms it again (HAS-308: the kitchen bar, on all along, gets its auto-off after the AMX is

@@ -50,6 +50,8 @@ public class LightStateTracker {
     //one write of a state: well above a healthy INSERT, below the bound of the Gen1 poll (HAS-302)
     static final Duration WRITE_TIMEOUT = Duration.ofSeconds(30);
     static final String EXTERNAL = "external";
+    //the word of a Shelly Gen2+ device for a change made by its own script
+    static final String LOOPBACK = "loopback";
 
     //the width of the column: the word of a device is not trusted to be short
     private static final int SOURCE_LENGTH = 50;
@@ -248,10 +250,10 @@ public class LightStateTracker {
 
     //Merges one reading into the state known before it. Switched on or off is a change; so is a
     //brightness or a color that differs from the one known - a light dimmed from a wall button, or
-    //while off, the level it will come back at (stored, but by itself no switch: the light keeps when and by
-    //whom it was last switched, HAS-269). What the reading does not say is kept from before: an
-    //Eaton dimmer that reports 0 keeps its last brightness, a Gen1 action its brightness and color.
-    //The rest confirms what is known and fills in what the reading adds
+    //while off, the level it will come back at - unless the device's own script set it (HAS-269, below).
+    //What the reading does not say is kept from before: an Eaton dimmer that reports 0 keeps its last
+    //brightness, a Gen1 action its brightness and color. The rest confirms what is known and fills in
+    //what the reading adds
     static Decision decide(
         final LightStatus previous,
         final LightReading reading,
@@ -262,30 +264,21 @@ public class LightStateTracker {
         final List<Integer> rgb = reading.rgb() != null ? reading.rgb() : previous.rgb();
         final Integer white = reading.white() != null ? reading.white() : previous.white();
 
-        final boolean changed = !Boolean.valueOf(reading.on()).equals(previous.on())
-            || differs(reading.brightness(), previous.brightness())
+        final boolean switched = !Boolean.valueOf(reading.on()).equals(previous.on());
+        final boolean levelChanged = differs(reading.brightness(), previous.brightness())
             || differs(reading.rgb(), previous.rgb())
             || differs(reading.white(), previous.white());
 
-        if (changed && command == null && staysOff(previous, reading)) {
-            //HAS-269: a level or a color stored in a light that stays off (the colour keeper of the HALL UP
-            //lamps sets the colour they come back with every minute) is stored, but it switched nothing - so
-            //when and by whom the light was last switched stay, and neither the manual hold of the rules nor
-            //the person-touched check of the empty house starts from it
-            return new Decision(new LightStatus(false, brightness, rgb, white, previous.changedAt(),
-                previous.source(), true), true);
-        }
-        if (changed) {
+        //HAS-269: the script of the HALL UP lamps picks the colour and the level of the hour once the rules
+        //switched them on - its own work (source loopback), not a person's. Taken for a change it would start
+        //the manual hold, and motion-off switches off only what the rules switched on. So it only confirms the
+        //state: the latest row takes the colour, when and by whom the light was switched stay
+        if (switched || levelChanged && !LOOPBACK.equals(reading.deviceSource())) {
             return new Decision(new LightStatus(reading.on(), brightness, rgb, white, now,
                 command != null ? command : deviceSource(reading), true), true);
         }
         return new Decision(new LightStatus(reading.on(), brightness, rgb, white, previous.changedAt(),
             previous.source(), true), false);
-    }
-
-    //known off before and still off - an unknown light, or one switched off at this reading, is switched
-    private static boolean staysOff(final LightStatus previous, final LightReading reading) {
-        return Boolean.FALSE.equals(previous.on()) && !reading.on() && previous.changedAt() != null;
     }
 
     //a value the reading did not say, or one never known before, is no difference
