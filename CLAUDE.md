@@ -97,6 +97,11 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
     highest id) and fills in what it adds - the presence-service shape, as blinds `blinds_state`;
   - what a report does not say is kept: an Eaton dimmer that reports `0` keeps its level, a Gen1
     action its brightness;
+  - **a level or a color the device's own script set is no change** (HAS-269, source `loopback`, the
+    switch itself excepted): it only confirms the state - the latest row takes it, `changedAt` and
+    `source` stay, a pending command is not used up. The rules switch the HALL UP lamps on with a plain
+    on and their script picks the colour of the hour; taken for a person's change it would start the
+    manual hold, and motion-off switches off only what the rules switched on;
   - a change within `COMMAND_WINDOW` (2 min - two Gen1 polls lie more than 60 s apart) of
     `commanded()` takes the command's source; the command is used up by a change, never by a
     confirmation; otherwise the word of the Shelly device, or `external` (cut to 50);

@@ -105,6 +105,59 @@ class LightStateTrackerTest {
             .changed()).isFalse();
     }
 
+    //HAS-269: the rules switch the HALL UP lamps on, their script then sets the colour and level of the hour
+    @Test
+    void should_take_a_color_set_by_the_script_of_the_light_for_a_confirmation() {
+        final LightStatus switchedOnByTheRule = new LightStatus(true, 100, List.of(255, 255, 255), null, EVENING, "rule", true);
+
+        final LightStateTracker.Decision script = LightStateTracker.decide(switchedOnByTheRule,
+            new LightReading(true, 5, List.of(255, 0, 0), null, "loopback"), EVENING.plusSeconds(1), null);
+
+        assertThat(script.changed()).isFalse();
+        assertThat(script.status())
+            .isEqualTo(new LightStatus(true, 5, List.of(255, 0, 0), null, EVENING, "rule", true));
+    }
+
+    @Test
+    void should_still_take_a_switch_by_the_script_or_a_color_by_anyone_else_for_a_change() {
+        final LightStatus off = new LightStatus(false, 100, List.of(255, 255, 255), null, EVENING.minusHours(1), "rule", true);
+
+        final LightStateTracker.Decision switchedByTheScript = LightStateTracker.decide(
+            off, new LightReading(true, 100, List.of(130, 0, 255), null, "loopback"), EVENING, null);
+        assertThat(switchedByTheScript.changed()).isTrue();
+        assertThat(switchedByTheScript.status().source()).isEqualTo("loopback");
+
+        final LightStateTracker.Decision colouredInTheApp = LightStateTracker.decide(
+            off, new LightReading(false, 40, List.of(255, 0, 0), null, "SHC"), EVENING, null);
+        assertThat(colouredInTheApp.changed()).isTrue();
+        assertThat(colouredInTheApp.status().changedAt()).isEqualTo(EVENING);
+        assertThat(colouredInTheApp.status().source()).isEqualTo("SHC");
+
+        final LightStateTracker.Decision firstReport = LightStateTracker.decide(
+            LightStatus.unknown(), new LightReading(false, 40, List.of(255, 0, 0), null, "loopback"), EVENING, null);
+        assertThat(firstReport.changed()).isTrue();
+    }
+
+    //no row of its own and the rule's command is not used up by it: the lamp's on still answers the command
+    @Test
+    void should_write_the_color_of_the_script_into_the_latest_row_and_keep_the_command_waiting() {
+        tracker.observe(STRIP, new LightReading(false, 100, List.of(255, 255, 255), null, "HTTP_in"))
+            .as(StepVerifier::create).verifyComplete();
+        tracker.commanded(STRIP, CommandSource.RULE);
+        clock.advance(Duration.ofSeconds(1));
+        tracker.observe(STRIP, new LightReading(false, 100, List.of(0, 255, 0), null, "loopback"))
+            .as(StepVerifier::create).verifyComplete();
+
+        verify(repository, times(1)).save(any());
+        verify(repository).touchLatest(eq(89L), any(), eq(100), eq("0,255,0"), eq(null));
+
+        tracker.observe(STRIP, new LightReading(true, 100, List.of(0, 255, 0), null, "HTTP_in"))
+            .as(StepVerifier::create).verifyComplete();
+        final ArgumentCaptor<LightStateEntity> rows = ArgumentCaptor.forClass(LightStateEntity.class);
+        verify(repository, times(2)).save(rows.capture());
+        assertThat(rows.getValue().source()).isEqualTo(CommandSource.RULE.value());
+    }
+
     //the same state again moves nothing but last_checked_at, and fills in what the report adds
     @Test
     void should_confirm_the_same_state_and_keep_when_and_who() {
