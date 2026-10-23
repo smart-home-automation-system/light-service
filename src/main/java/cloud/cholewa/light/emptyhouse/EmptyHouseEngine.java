@@ -146,7 +146,7 @@ public class EmptyHouseEngine {
             final Set<Long> lit = isNight ? night.lightsAt(now) : Set.of();
             final List<Light> lights = lightRegistry.current();
             return Flux.fromIterable(lights)
-                .concatMap(light -> lightStateTracker.status(light.id()).map(status -> new LightSnapshot(
+                .concatMap(light -> lightStateTracker.status(light).map(status -> new LightSnapshot(
                     light, status, commandedAt.get(light.id()))))
                 .collectList()
                 .flatMap(snapshots -> {

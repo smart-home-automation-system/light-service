@@ -37,7 +37,6 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -68,9 +67,9 @@ class LightQueryServiceTest {
 
     @BeforeEach
     void setUp() {
-        when(tracker.status(anyLong())).thenReturn(Mono.just(LightStatus.unknown()));
-        when(tracker.status(21)).thenReturn(Mono.just(new LightStatus(false, null, null, null, EVENING, "external", null)));
-        when(tracker.status(23)).thenReturn(Mono.just(new LightStatus(true, 40, null, null, EVENING, "dashboard", true)));
+        when(tracker.status(any(Light.class))).thenReturn(Mono.just(LightStatus.unknown()));
+        when(tracker.status(CEILING)).thenReturn(Mono.just(new LightStatus(false, null, null, null, EVENING, "external", null)));
+        when(tracker.status(BAR)).thenReturn(Mono.just(new LightStatus(true, 40, null, null, EVENING, "dashboard", true)));
         when(tracker.observe(any(), any())).thenReturn(Mono.empty());
         when(occupancyRegistry.loaded()).thenReturn(true);
         when(ruleEngine.motion(any())).thenReturn(Mono.empty());

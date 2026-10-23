@@ -28,10 +28,10 @@ import java.util.Set;
 //  so it survives a restart with the state;
 //- once: a light this service sent a command to is not sent another until it reported a change - an
 //  unreachable light is not commanded every minute;
-//- auto-off: every light that is on and not held goes off autoOffDelayMinutes after the room is empty - by
-//  its presence sensors (and no motion since), or with motion sensors only by the last motion. A room
-//  whose presence sensor is not known, or whose motion sensor is not reachable or has not reported since
-//  the start, is skipped and named;
+//- auto-off: every light that is on, or not known to be off (HAS-308), and not held goes off autoOffDelayMinutes
+//  after the room is empty - by its presence sensors (and no motion since), or with motion sensors only by
+//  the last motion. A room whose presence sensor is not known, or whose motion sensor is not reachable or
+//  has not reported since the start, is skipped and named;
 //- motion-on: at a fresh motion in a room darker than onlyBelowLux (a lux not known never holds), the
 //  lights that are not on get what the period of the moment gives - no period, no light;
 //- motion-off: motionOffAfterMinutes after the last motion the lights the rule switched on go off, unless a
@@ -78,8 +78,10 @@ public final class RuleEvaluator {
             if (empty.unknown() != null) {
                 skipped = empty.unknown();
             } else if (empty.since() != null && !empty.since().plusMinutes(rule.autoOffDelayMinutes()).isAfter(now)) {
+                //a light not known to be off goes off too (HAS-308, owner 2026-10-22): an off to a light that may
+                //be on is harmless, and it would have switched off the kitchen bar the AMX could not confirm
                 room.lights().stream()
-                    .filter(light -> Boolean.TRUE.equals(light.status().on()))
+                    .filter(light -> !Boolean.FALSE.equals(light.status().on()))
                     .filter(light -> free(light, rule, now))
                     .forEach(light -> actions.put(light.light().id(),
                         new RuleAction(light.light(), false, RuleReason.AUTO_OFF, null)));

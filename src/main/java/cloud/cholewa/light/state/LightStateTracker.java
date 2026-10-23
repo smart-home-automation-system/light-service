@@ -5,6 +5,7 @@ import cloud.cholewa.light.database.model.LightStateEntity;
 import cloud.cholewa.light.database.repository.LightStateRepository;
 import cloud.cholewa.light.model.CommandSource;
 import cloud.cholewa.light.model.Light;
+import cloud.cholewa.light.model.LightBinding;
 import cloud.cholewa.light.model.LightReading;
 import cloud.cholewa.light.model.LightStatus;
 import lombok.extern.slf4j.Slf4j;
@@ -62,6 +63,10 @@ public class LightStateTracker {
     //inserted in the order the states changed - the latest row (the highest id) is what a restart reads
     //back. Only the last one is held, never a chain of them
     private final Map<Long, Sinks.Empty<Void>> writes = new ConcurrentHashMap<>();
+    //when every Eaton light was last heard since the start, and when the AMX frame server was last found away -
+    //what isConfirmed judges an Eaton light by (HAS-308)
+    private final Map<Long, Instant> heardAt = new ConcurrentHashMap<>();
+    private final AtomicReference<Instant> eatonLostAt = new AtomicReference<>();
     private final Mono<Void> restored;
 
     public LightStateTracker(final LightStateRepository repository, final Clock clock) {
@@ -82,9 +87,46 @@ public class LightStateTracker {
             .cache();
     }
 
-    /** The state of one light; {@link LightStatus#unknown()} for one nothing was heard of. */
-    public Mono<LightStatus> status(final long id) {
-        return restored.then(Mono.fromSupplier(() -> statuses.getOrDefault(id, LightStatus.unknown())));
+    /**
+     * The state of one light; {@link LightStatus#unknown()} for one nothing was heard of. An Eaton light
+     * not confirmed by the AMX ({@link #isConfirmed}) has no {@code on} (HAS-308).
+     */
+    public Mono<LightStatus> status(final Light light) {
+        return restored.then(Mono.fromSupplier(() -> {
+            final LightStatus status = statuses.getOrDefault(light.id(), LightStatus.unknown());
+            return isConfirmed(light) ? status : status.withoutOn();
+        }));
+    }
+
+    /**
+     * Whether what is kept of the light is what the light is now (HAS-308). A Shelly light is believed: it is
+     * polled or reports by itself within minutes, and it says so when it cannot be reached. An Eaton actuator
+     * reports only when it is switched, and nothing at all while the AMX is away - on 2026-10-22 the kitchen bar
+     * stood "off", restored from the day before, while it was on. So an Eaton light counts as known once a frame
+     * or a status answer was heard after the start, and after the last time the frame server was found
+     * unavailable ({@link #eatonUnavailable}).
+     */
+    public boolean isConfirmed(final Light light) {
+        if (!(light.binding() instanceof LightBinding.Eaton)) {
+            return true;
+        }
+        final Instant heard = heardAt.get(light.id());
+        final Instant lost = eatonLostAt.get();
+        return heard != null && (lost == null || heard.isAfter(lost));
+    }
+
+    /**
+     * amx-service answered that its frame server is not connected (HAS-308): every Eaton light is unknown
+     * until it is heard again - a frame of its own, or the answer to a status request.
+     */
+    public void eatonUnavailable(final String reason) {
+        final Instant now = Instant.now(clock);
+        final Instant before = eatonLostAt.getAndSet(now);
+        //once per loss: the first time, or when a light was heard since the last one
+        if (before == null || heardAt.values().stream().anyMatch(heard -> heard.isAfter(before))) {
+            log.warn("The AMX frame server is not available ({}): the Eaton lights are unknown until each is heard again",
+                reason);
+        }
     }
 
     /**
@@ -136,6 +178,11 @@ public class LightStateTracker {
         return restored.then(Mono.defer(() -> {
             //cut to what the column keeps: a restart must read back the same time
             final LocalDateTime now = LocalDateTime.now(clock).truncatedTo(ChronoUnit.MICROS);
+            //the device spoke: what it said is the present (HAS-308) - kept for the Eaton lights alone, the
+            //only ones isConfirmed asks about, so a Shelly light heard every minute does not end a loss
+            if (light.binding() instanceof LightBinding.Eaton) {
+                heardAt.put(light.id(), Instant.now(clock));
+            }
             final IssuedCommand command = pendingCommand(light.id());
             final AtomicReference<LightStatus> before = new AtomicReference<>();
             final AtomicReference<Decision> decision = new AtomicReference<>();

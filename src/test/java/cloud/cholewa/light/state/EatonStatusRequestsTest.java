@@ -35,20 +35,17 @@ class EatonStatusRequestsTest {
 
     private final LightRegistry registry = mock(LightRegistry.class);
     private final EatonDriver driver = mock(EatonDriver.class);
-    private final EatonStatusRequests requests = new EatonStatusRequests(registry, driver);
+    private final LightStateTracker tracker = mock(LightStateTracker.class);
+    private final EatonStatusRequests requests = new EatonStatusRequests(registry, driver, tracker);
 
     //one after the other, a second apart; one that cannot be asked holds up none after it
     @Test
-    void should_ask_every_eaton_light_once_one_after_the_other() {
+    void should_ask_every_unconfirmed_eaton_light_one_after_the_other() {
         when(registry.current()).thenReturn(List.of(BOILER, MAIN, STAIRS));
-        when(driver.requestStatus(BOILER)).thenReturn(Mono.error(new IllegalStateException("amx-service answered 502")));
+        when(driver.requestStatus(BOILER)).thenReturn(Mono.error(new IllegalStateException("amx-service answered 500")));
         when(driver.requestStatus(STAIRS)).thenReturn(Mono.empty());
 
-        final Mono<Void> pass = requests.askOnce();
-        StepVerifier.withVirtualTime(() -> pass)
-            .thenAwait(Duration.ofSeconds(5))
-            .verifyComplete();
-        StepVerifier.withVirtualTime(requests::askOnce)
+        StepVerifier.withVirtualTime(requests::askUnconfirmed)
             .thenAwait(Duration.ofSeconds(5))
             .verifyComplete();
 
@@ -58,12 +55,57 @@ class EatonStatusRequestsTest {
         verify(driver, times(2)).requestStatus(any());
     }
 
+    //HAS-308: a light that did not answer is asked again with the next pass, one that answered is not
+    @Test
+    void should_ask_again_until_the_light_answers() {
+        when(registry.current()).thenReturn(List.of(BOILER, STAIRS));
+        when(driver.requestStatus(any())).thenReturn(Mono.empty());
+        when(tracker.isConfirmed(STAIRS)).thenReturn(true);
+
+        StepVerifier.withVirtualTime(requests::askUnconfirmed).thenAwait(Duration.ofSeconds(5)).verifyComplete();
+        StepVerifier.withVirtualTime(requests::askUnconfirmed).thenAwait(Duration.ofSeconds(5)).verifyComplete();
+
+        verify(driver, times(2)).requestStatus(BOILER);
+        verify(driver, never()).requestStatus(STAIRS);
+    }
+
+    //every Eaton light confirmed: one of them in turn is asked, the probe that finds the AMX away
+    @Test
+    void should_probe_one_light_in_turn_when_every_one_is_confirmed() {
+        when(registry.current()).thenReturn(List.of(BOILER, MAIN, STAIRS));
+        when(driver.requestStatus(any())).thenReturn(Mono.empty());
+        when(tracker.isConfirmed(any())).thenReturn(true);
+
+        StepVerifier.withVirtualTime(requests::askUnconfirmed).thenAwait(Duration.ofSeconds(5)).verifyComplete();
+        StepVerifier.withVirtualTime(requests::askUnconfirmed).thenAwait(Duration.ofSeconds(5)).verifyComplete();
+        StepVerifier.withVirtualTime(requests::askUnconfirmed).thenAwait(Duration.ofSeconds(5)).verifyComplete();
+
+        final InOrder order = inOrder(driver);
+        order.verify(driver).requestStatus(BOILER);
+        order.verify(driver).requestStatus(STAIRS);
+        order.verify(driver).requestStatus(BOILER);
+        verify(driver, never()).requestStatus(MAIN);
+    }
+
+    //the frame server away: the others would be refused the same way - the pass ends there
+    @Test
+    void should_stop_the_pass_when_the_amx_is_away() {
+        when(registry.current()).thenReturn(List.of(BOILER, STAIRS));
+        final EatonDriver.AmxCallException away = amxAway();
+        when(driver.requestStatus(BOILER)).thenReturn(Mono.error(away));
+
+        StepVerifier.withVirtualTime(requests::askUnconfirmed).thenAwait(Duration.ofSeconds(5)).verifyComplete();
+
+        verify(driver).requestStatus(BOILER);
+        verify(driver, never()).requestStatus(STAIRS);
+    }
+
     //a registry not read yet: nothing to ask, asked at the next pass
     @Test
     void should_wait_for_the_registry() {
         when(registry.current()).thenReturn(List.of());
 
-        requests.askOnce().as(StepVerifier::create).verifyComplete();
+        requests.askUnconfirmed().as(StepVerifier::create).verifyComplete();
 
         verify(driver, never()).requestStatus(any());
     }
@@ -74,10 +116,16 @@ class EatonStatusRequestsTest {
         when(registry.current()).thenReturn(List.of(BOILER));
         when(driver.requestStatus(BOILER)).thenReturn(Mono.never());
 
-        StepVerifier.withVirtualTime(requests::askOnce)
+        StepVerifier.withVirtualTime(requests::askUnconfirmed)
             .expectSubscription()
             .expectNoEvent(EatonStatusRequests.LIMIT.minusSeconds(1))
             .thenAwait(Duration.ofSeconds(1))
             .verifyComplete();
+    }
+
+    private static EatonDriver.AmxCallException amxAway() {
+        final EatonDriver.AmxCallException failure = mock(EatonDriver.AmxCallException.class);
+        when(failure.frameServerUnavailable()).thenReturn(true);
+        return failure;
     }
 }

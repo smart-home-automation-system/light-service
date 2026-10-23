@@ -12,9 +12,14 @@ import cloud.cholewa.light.model.Light;
 import cloud.cholewa.light.model.LightBinding;
 import cloud.cholewa.light.model.LightReading;
 import cloud.cholewa.light.model.LightStatus;
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
@@ -44,6 +49,11 @@ class LightStateTrackerTest {
     private static final LocalDateTime EVENING = LocalDateTime.of(2026, 10, 19, 19, 0);
     private static final Light SOFA = new Light(25, "Sofa", RoomName.LIVING_ROOM, SmartVendor.EATON,
         new LightBinding.Eaton(24, EatonGatewayType.LIGHTS), LightKind.DIMMER);
+    //a Shelly light is believed as restored; an Eaton one only once it was heard (HAS-308)
+    private static final Light STRIP = new Light(89, "Strip", RoomName.LIVING_ROOM, SmartVendor.SHELLY,
+        new LightBinding.ShellyGen2("10.0.0.89", 0, "strip"), LightKind.RGBW);
+    private static final Light UNKNOWN = new Light(99, "Nobody heard", RoomName.LIVING_ROOM, SmartVendor.SHELLY,
+        new LightBinding.ShellyGen1("10.0.0.99", 0), LightKind.RELAY);
     private static final LightStatus ON_AT_40 = new LightStatus(true, 40, null, null, EVENING, "dashboard", true);
 
     private final LightStateRepository repository = mock(LightStateRepository.class);
@@ -142,7 +152,7 @@ class LightStateTrackerTest {
         tracker.observe(SOFA, LightReading.switched(false)).as(StepVerifier::create).verifyComplete();
         tracker.observe(SOFA, LightReading.switched(true)).as(StepVerifier::create).verifyComplete();
 
-        tracker.status(25).as(StepVerifier::create)
+        tracker.status(SOFA).as(StepVerifier::create)
             .assertNext(status -> assertThat(status.source()).isEqualTo("dashboard"))
             .verifyComplete();
     }
@@ -210,7 +220,7 @@ class LightStateTrackerTest {
 
         assertThat(tracker.notTaken(SOFA, off)).isFalse();
         assertThat(tracker.notTaken(25, CommandSource.RULE)).isFalse();
-        tracker.status(25).as(StepVerifier::create)
+        tracker.status(SOFA).as(StepVerifier::create)
             .assertNext(status -> assertThat(status.source()).isEqualTo("rule"))
             .verifyComplete();
     }
@@ -249,13 +259,17 @@ class LightStateTrackerTest {
             new LightStateEntity(8L, 89, true, 60, "255,0,0", null, "dashboard", EVENING, EVENING)));
         tracker = new LightStateTracker(repository, clock);
 
-        tracker.status(25).as(StepVerifier::create)
-            .assertNext(status -> assertThat(status).isEqualTo(new LightStatus(true, 30, null, null, EVENING, "button", null)))
+        //an Eaton light restored and not heard since: on is left out, the rest stays (HAS-308)
+        tracker.status(SOFA).as(StepVerifier::create)
+            .assertNext(status -> assertThat(status).isEqualTo(new LightStatus(null, 30, null, null, EVENING, "button", null)))
             .verifyComplete();
-        tracker.status(89).as(StepVerifier::create)
-            .assertNext(status -> assertThat(status.rgb()).containsExactly(255, 0, 0))
+        tracker.status(STRIP).as(StepVerifier::create)
+            .assertNext(status -> {
+                assertThat(status.on()).isTrue();
+                assertThat(status.rgb()).containsExactly(255, 0, 0);
+            })
             .verifyComplete();
-        tracker.status(99).as(StepVerifier::create)
+        tracker.status(UNKNOWN).as(StepVerifier::create)
             .assertNext(status -> assertThat(status).isEqualTo(LightStatus.unknown()))
             .verifyComplete();
         verify(repository, times(1)).findLatestPerDevice();
@@ -269,7 +283,7 @@ class LightStateTrackerTest {
 
         tracker.observe(SOFA, LightReading.switched(true)).as(StepVerifier::create).verifyComplete();
 
-        tracker.status(25).as(StepVerifier::create)
+        tracker.status(SOFA).as(StepVerifier::create)
             .assertNext(status -> assertThat(status.on()).isTrue())
             .verifyComplete();
     }
@@ -287,7 +301,7 @@ class LightStateTrackerTest {
     @Test
     void should_know_reachability_apart_from_the_state() {
         tracker.reachability(SOFA, false, "the device left the broker").as(StepVerifier::create).verifyComplete();
-        tracker.status(25).as(StepVerifier::create)
+        tracker.status(SOFA).as(StepVerifier::create)
             .assertNext(status -> {
                 assertThat(status.reachable()).isFalse();
                 assertThat(status.on()).isNull();
@@ -295,12 +309,112 @@ class LightStateTrackerTest {
             .verifyComplete();
 
         tracker.observe(SOFA, LightReading.switched(true)).as(StepVerifier::create).verifyComplete();
-        tracker.status(25).as(StepVerifier::create)
+        tracker.status(SOFA).as(StepVerifier::create)
             .assertNext(status -> assertThat(status.reachable()).isTrue())
             .verifyComplete();
         verify(repository, never()).touchLatest(anyLong(), any(), anyInt(), anyString(), anyInt());
     }
 
+
+    //HAS-308: the kitchen bar of 2026-10-22 - restored off, on in truth, the AMX away: not known until it is heard
+    @Test
+    void should_know_a_restored_eaton_light_once_it_was_heard() {
+        when(repository.findLatestPerDevice()).thenReturn(Flux.just(
+            new LightStateEntity(7L, 25, false, null, null, null, "rule", EVENING, EVENING)));
+        tracker = new LightStateTracker(repository, clock);
+
+        tracker.status(SOFA).as(StepVerifier::create)
+            .assertNext(status -> {
+                assertThat(status.on()).isNull();
+                assertThat(status.source()).isEqualTo("rule");
+                assertThat(status.changedAt()).isEqualTo(EVENING);
+            })
+            .verifyComplete();
+        assertThat(tracker.isConfirmed(SOFA)).isFalse();
+
+        clock.advance(Duration.ofMinutes(1));
+        tracker.observe(SOFA, LightReading.switched(true)).as(StepVerifier::create).verifyComplete();
+
+        assertThat(tracker.isConfirmed(SOFA)).isTrue();
+        tracker.status(SOFA).as(StepVerifier::create)
+            .assertNext(status -> assertThat(status.on()).isTrue())
+            .verifyComplete();
+    }
+
+    //a confirmation of the state already kept counts as much as a change
+    @Test
+    void should_know_an_eaton_light_whose_answer_confirms_what_was_restored() {
+        when(repository.findLatestPerDevice()).thenReturn(Flux.just(
+            new LightStateEntity(7L, 25, true, 30, null, null, "button", EVENING, EVENING)));
+        tracker = new LightStateTracker(repository, clock);
+
+        tracker.observe(SOFA, new LightReading(true, 30, null, null, null)).as(StepVerifier::create).verifyComplete();
+
+        tracker.status(SOFA).as(StepVerifier::create)
+            .assertNext(status -> assertThat(status).isEqualTo(new LightStatus(true, 30, null, null, EVENING, "button", true)))
+            .verifyComplete();
+        verify(repository, never()).save(any());
+    }
+
+    //FRAME_SERVER_UNAVAILABLE: every Eaton light is unknown until it is heard again; a Shelly light is not touched
+    @Test
+    void should_forget_every_eaton_light_while_the_amx_is_away() {
+        tracker.observe(SOFA, LightReading.switched(true)).as(StepVerifier::create).verifyComplete();
+        tracker.observe(STRIP, LightReading.switched(true)).as(StepVerifier::create).verifyComplete();
+
+        clock.advance(Duration.ofMinutes(1));
+        tracker.eatonUnavailable("a test");
+
+        assertThat(tracker.isConfirmed(SOFA)).isFalse();
+        assertThat(tracker.isConfirmed(STRIP)).isTrue();
+        tracker.status(SOFA).as(StepVerifier::create)
+            .assertNext(status -> assertThat(status.on()).isNull())
+            .verifyComplete();
+        tracker.status(STRIP).as(StepVerifier::create)
+            .assertNext(status -> assertThat(status.on()).isTrue())
+            .verifyComplete();
+
+        clock.advance(Duration.ofMinutes(5));
+        tracker.observe(SOFA, LightReading.switched(true)).as(StepVerifier::create).verifyComplete();
+
+        assertThat(tracker.isConfirmed(SOFA)).isTrue();
+    }
+
+    //one WARN per loss: a Shelly light heard meanwhile ends nothing, an Eaton light heard again does
+    @Test
+    void should_announce_a_loss_once() {
+        final ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        final Logger logger = (Logger) LoggerFactory.getLogger(LightStateTracker.class);
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            tracker.eatonUnavailable("a test");
+            clock.advance(Duration.ofMinutes(5));
+            tracker.observe(STRIP, LightReading.switched(true)).as(StepVerifier::create).verifyComplete();
+            clock.advance(Duration.ofMinutes(5));
+            tracker.eatonUnavailable("a test");
+            clock.advance(Duration.ofMinutes(5));
+            tracker.observe(SOFA, LightReading.switched(true)).as(StepVerifier::create).verifyComplete();
+            clock.advance(Duration.ofMinutes(5));
+            tracker.eatonUnavailable("a test");
+        } finally {
+            logger.detachAppender(appender);
+        }
+
+        assertThat(appender.list.stream()
+            .filter(event -> event.getLevel() == Level.WARN)
+            .filter(event -> event.getFormattedMessage().startsWith("The AMX frame server is not available")))
+            .hasSize(2);
+    }
+
+    //heard in the same instant the loss was noted is not after it
+    @Test
+    void should_not_count_a_light_heard_at_the_moment_of_the_loss() {
+        tracker.observe(SOFA, LightReading.switched(true)).as(StepVerifier::create).verifyComplete();
+        tracker.eatonUnavailable("a test");
+
+        assertThat(tracker.isConfirmed(SOFA)).isFalse();
+    }
 
     private static final class MovingClock extends Clock {
 

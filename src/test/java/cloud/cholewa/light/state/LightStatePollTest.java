@@ -30,7 +30,6 @@ import java.util.List;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
-import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -110,7 +109,7 @@ class LightStatePollTest {
     //is unreachable (HAS-264)
     @Test
     void should_make_a_gen2_light_unreachable_that_is_not_known_and_does_not_answer() {
-        when(tracker.status(anyLong())).thenReturn(Mono.just(LightStatus.unknown()));
+        when(tracker.status(any(Light.class))).thenReturn(Mono.just(LightStatus.unknown()));
         when(rpcClient.switchStatus("10.0.0.45", 0)).thenReturn(Mono.error(new ShellyCallException("timed out")));
         when(rpcClient.lightStatus("10.0.0.44", 0)).thenReturn(Mono.just(new Gen2LightStatus()));
         when(profiles.of(any())).thenReturn(Mono.error(new ShellyCallException("timed out")));
@@ -125,7 +124,7 @@ class LightStatePollTest {
     //MQTT owns the reachability of a Gen2+ light: a failed call next to a live stream would make it flap
     @Test
     void should_leave_the_reachability_of_a_gen2_light_to_mqtt() {
-        when(tracker.status(anyLong())).thenReturn(Mono.just(new LightStatus(true, null, null, null, null, "external", true)));
+        when(tracker.status(any(Light.class))).thenReturn(Mono.just(new LightStatus(true, null, null, null, null, "external", true)));
         when(rpcClient.switchStatus("10.0.0.45", 0)).thenReturn(Mono.error(new ShellyCallException("timed out")));
         when(rpcClient.lightStatus("10.0.0.44", 0)).thenReturn(Mono.just(new Gen2LightStatus()));
         when(profiles.of(any())).thenReturn(Mono.error(new ShellyCallException("timed out")));

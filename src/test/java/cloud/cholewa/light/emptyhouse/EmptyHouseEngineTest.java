@@ -5,6 +5,7 @@ import cloud.cholewa.light.config.EmptyHouseProperties;
 import cloud.cholewa.light.database.model.RuleRunEntity;
 import cloud.cholewa.light.database.repository.RuleRunRepository;
 import cloud.cholewa.light.model.CommandSource;
+import cloud.cholewa.light.model.Light;
 import cloud.cholewa.light.model.LightStatus;
 import cloud.cholewa.light.model.Turn;
 import cloud.cholewa.light.model.emptyhouse.PhaseName;
@@ -87,7 +88,7 @@ class EmptyHouseEngineTest {
             return new SunDay(date, LocalTime.of(7, 0), LocalTime.of(17, 30));
         });
         when(lightRegistry.current()).thenReturn(List.of(BEDROOM_CEILING, KITCHEN_CEILING));
-        when(lightStateTracker.status(anyLong())).thenReturn(Mono.just(off()));
+        when(lightStateTracker.status(any(Light.class))).thenReturn(Mono.just(off()));
         when(lightCommandService.turn(anyLong(), any(), any())).thenReturn(Mono.empty());
         when(ruleRunRepository.save(any())).thenAnswer(invocation -> Mono.just(invocation.getArgument(0)));
         when(notificationPublisher.publishInfo(anyString())).thenReturn(Mono.empty());
@@ -98,7 +99,7 @@ class EmptyHouseEngineTest {
     //empty at 12:00, nothing before 12:10; at 12:10 the light left on goes off, one notification
     @Test
     void should_switch_off_the_lights_left_on_by_day_after_the_delay_and_announce_it_once() {
-        when(lightStateTracker.status(BEDROOM_CEILING.id())).thenReturn(Mono.just(on("dashboard", NOON.minusHours(1))));
+        when(lightStateTracker.status(BEDROOM_CEILING)).thenReturn(Mono.just(on("dashboard", NOON.minusHours(1))));
 
         tick();
         now.set(NOON.plusMinutes(9));
@@ -150,7 +151,7 @@ class EmptyHouseEngineTest {
     void should_start_the_guard_anew_from_day_to_night() {
         now.set(DAY.atTime(16, 0));
         tick();
-        when(lightStateTracker.status(KITCHEN_CEILING.id())).thenReturn(Mono.just(on("dashboard", DAY.atTime(15, 0))));
+        when(lightStateTracker.status(KITCHEN_CEILING)).thenReturn(Mono.just(on("dashboard", DAY.atTime(15, 0))));
         now.set(DAY.atTime(16, 10));
         tick();
         now.set(DAY.atTime(18, 0));
@@ -158,7 +159,7 @@ class EmptyHouseEngineTest {
 
         verify(lightCommandService).turn(KITCHEN_CEILING.id(), Turn.OFF, CommandSource.EMPTY_HOUSE);
         verify(lightCommandService, never()).turn(KITCHEN_CEILING.id(), Turn.ON, CommandSource.EMPTY_HOUSE);
-        when(lightStateTracker.status(KITCHEN_CEILING.id())).thenReturn(Mono.just(off()));
+        when(lightStateTracker.status(KITCHEN_CEILING)).thenReturn(Mono.just(off()));
         now.set(DAY.atTime(18, 1));
         tick();
         verify(lightCommandService).turn(KITCHEN_CEILING.id(), Turn.ON, CommandSource.EMPTY_HOUSE);
@@ -167,7 +168,7 @@ class EmptyHouseEngineTest {
     //a database away at night: the pass is skipped - taken for no plan it would switch the simulation off
     @Test
     void should_skip_a_night_pass_whose_plan_cannot_be_read() {
-        when(lightStateTracker.status(KITCHEN_CEILING.id())).thenReturn(Mono.just(on("empty-house", DAY.atTime(18, 0, 5))));
+        when(lightStateTracker.status(KITCHEN_CEILING)).thenReturn(Mono.just(on("empty-house", DAY.atTime(18, 0, 5))));
         when(simulationPlanService.get()).thenReturn(Mono.error(new IllegalStateException("database away")));
         now.set(DAY.atTime(17, 0));
         tick();
@@ -185,7 +186,7 @@ class EmptyHouseEngineTest {
         tick();
         now.set(DAY.atTime(18, 0));
         tick();
-        when(lightStateTracker.status(KITCHEN_CEILING.id())).thenReturn(Mono.just(on("empty-house", DAY.atTime(18, 0, 5))));
+        when(lightStateTracker.status(KITCHEN_CEILING)).thenReturn(Mono.just(on("empty-house", DAY.atTime(18, 0, 5))));
         now.set(DAY.plusDays(1).atTime(7, 0));
         tick();
 
@@ -195,7 +196,7 @@ class EmptyHouseEngineTest {
 
     @Test
     void should_do_nothing_while_somebody_is_at_home_or_nobody_can_tell() {
-        when(lightStateTracker.status(BEDROOM_CEILING.id())).thenReturn(Mono.just(on("dashboard", NOON.minusHours(1))));
+        when(lightStateTracker.status(BEDROOM_CEILING)).thenReturn(Mono.just(on("dashboard", NOON.minusHours(1))));
         when(presenceClient.residents()).thenReturn(Mono.just(List.of(new ResidentPresence("Kate", true, NOON, NOON))));
         tick();
         when(presenceClient.residents()).thenReturn(Mono.error(new IllegalStateException("presence-service away")));
@@ -209,7 +210,7 @@ class EmptyHouseEngineTest {
     //somebody back: it ends, the lights stay as they are; the next empty house is announced again
     @Test
     void should_end_when_somebody_comes_back_and_start_anew_the_next_time() {
-        when(lightStateTracker.status(BEDROOM_CEILING.id())).thenReturn(Mono.just(on("dashboard", NOON.minusHours(1))));
+        when(lightStateTracker.status(BEDROOM_CEILING)).thenReturn(Mono.just(on("dashboard", NOON.minusHours(1))));
         tick();
         now.set(NOON.plusMinutes(10));
         tick();
@@ -232,7 +233,7 @@ class EmptyHouseEngineTest {
     @Test
     void should_watch_but_not_act_when_switched_off() {
         engine = engine(false);
-        when(lightStateTracker.status(BEDROOM_CEILING.id())).thenReturn(Mono.just(on("dashboard", NOON.minusHours(1))));
+        when(lightStateTracker.status(BEDROOM_CEILING)).thenReturn(Mono.just(on("dashboard", NOON.minusHours(1))));
         tick();
         now.set(NOON.plusMinutes(30));
         tick();
@@ -244,7 +245,7 @@ class EmptyHouseEngineTest {
     //a reactive @Scheduled method is subscribed again for every run: now is read inside the chain
     @Test
     void should_read_the_clock_anew_for_every_run() {
-        when(lightStateTracker.status(BEDROOM_CEILING.id())).thenReturn(Mono.just(on("dashboard", NOON.minusHours(1))));
+        when(lightStateTracker.status(BEDROOM_CEILING)).thenReturn(Mono.just(on("dashboard", NOON.minusHours(1))));
         final Mono<Void> tick = engine.tick();
 
         tick.as(StepVerifier::create).verifyComplete();
@@ -257,7 +258,7 @@ class EmptyHouseEngineTest {
     //a notification or a log that fails fails nothing
     @Test
     void should_carry_on_past_a_notification_and_a_log_that_fail() {
-        when(lightStateTracker.status(BEDROOM_CEILING.id())).thenReturn(Mono.just(on("dashboard", NOON.minusHours(1))));
+        when(lightStateTracker.status(BEDROOM_CEILING)).thenReturn(Mono.just(on("dashboard", NOON.minusHours(1))));
         when(notificationPublisher.publishInfo(anyString())).thenReturn(Mono.error(new IllegalStateException("broker away")));
         doReturn(Mono.error(new IllegalStateException("database away"))).when(ruleRunRepository).save(any());
         tick();

@@ -5,6 +5,7 @@ import cloud.cholewa.light.error.LightException;
 import cloud.cholewa.light.model.Color;
 import cloud.cholewa.light.model.Light;
 import cloud.cholewa.light.model.LightBinding;
+import cloud.cholewa.light.state.LightStateTracker;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.stereotype.Component;
@@ -22,10 +23,16 @@ import java.util.function.Function;
 @Component
 public class EatonDriver implements LightDriver {
 
-    private final WebClient amxWebClient;
+    //the code of amx-service for a frame server that is not connected (its CustomError): every Eaton light
+    //is then unknown until it is heard again (HAS-308)
+    static final String FRAME_SERVER_UNAVAILABLE = "FRAME_SERVER_UNAVAILABLE";
 
-    public EatonDriver(@Qualifier("amxWebClient") final WebClient amxWebClient) {
+    private final WebClient amxWebClient;
+    private final LightStateTracker lightStateTracker;
+
+    public EatonDriver(@Qualifier("amxWebClient") final WebClient amxWebClient, final LightStateTracker lightStateTracker) {
         this.amxWebClient = amxWebClient;
+        this.lightStateTracker = lightStateTracker;
     }
 
     @Override
@@ -67,8 +74,14 @@ public class EatonDriver implements LightDriver {
             .retrieve()
             .onStatus(HttpStatusCode::isError, response -> DownstreamErrors.read(response)
                 .map(error -> new AmxCallException(
-                    "amx-service answered " + error.status().value() + " " + error.errors())))
+                    "amx-service answered " + error.status().value() + " " + error.errors(),
+                    error.errors().stream().anyMatch(message -> FRAME_SERVER_UNAVAILABLE.equals(message.getCode())))))
             .toBodilessEntity()
+            .doOnError(AmxCallException.class, failure -> {
+                if (failure.frameServerUnavailable()) {
+                    lightStateTracker.eatonUnavailable("amx-service answered " + FRAME_SERVER_UNAVAILABLE);
+                }
+            })
             .then();
     }
 
@@ -76,10 +89,18 @@ public class EatonDriver implements LightDriver {
         return ((LightBinding.Eaton) light.binding()).point();
     }
 
-    static class AmxCallException extends RuntimeException {
+    /** A refusal of amx-service; whether it said its frame server is not connected. */
+    public static class AmxCallException extends RuntimeException {
 
-        AmxCallException(final String message) {
+        private final boolean frameServerUnavailable;
+
+        AmxCallException(final String message, final boolean frameServerUnavailable) {
             super(message);
+            this.frameServerUnavailable = frameServerUnavailable;
+        }
+
+        public boolean frameServerUnavailable() {
+            return frameServerUnavailable;
         }
     }
 }

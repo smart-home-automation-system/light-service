@@ -123,7 +123,7 @@ public class LightQueryService {
 
     //the manual hold by the rule of the room as last read (HAS-262), only while it lasts
     private Mono<LightView> view(final Light light) {
-        return lightStateTracker.status(light.id()).map(status -> {
+        return lightStateTracker.status(light).map(status -> {
             final LocalDateTime heldUntil = RuleEvaluator.heldUntil(status, ruleBook.rule(light.room()));
             return LightView.of(light, status,
                 heldUntil != null && heldUntil.isAfter(LocalDateTime.now(clock)) ? heldUntil : null);
