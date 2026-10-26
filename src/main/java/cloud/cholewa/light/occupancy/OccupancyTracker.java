@@ -23,6 +23,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 //- occupied: the presence sensors of the room. Occupied when one says somebody is there, empty when every
 //  one says nobody is, unknown otherwise; a presence sensor that left the broker is not known.
 //- lastMotionAt: the newest motion of any motion sensor of the room.
+//- motion / motionClearedAt (HAS-349): a BLU Motion sends the start of a motion and its clear, so its true
+//  is a motion still going on; the room has one while any of its BLU Motions does, and the newest clear.
+//  A true older than light.occupancy.motion-held-at-most counts as cleared then (a lost clear packet).
 //- illumination / lux: the newest of any sensor of the room that reports it - a word of a Presence Gen4,
 //  a number of a BLU Motion or a Shelly Motion.
 //- since: when the service saw the occupancy of the room change, from unknown included.
@@ -60,9 +63,11 @@ public class OccupancyTracker {
         Instant motionHeardAt,
         Instant luxHeardAt,
         LocalDateTime lastReportAt,
-        LocalDateTime confirmedAt
+        LocalDateTime confirmedAt,
+        Boolean motionNow,
+        LocalDateTime motionClearedAt
     ) {
-        static final Reading NONE = new Reading(null, null, null, null, null, null, null, null, null, null, null);
+        static final Reading NONE = new Reading(null, null, null, null, null, null, null, null, null, null, null, null, null);
     }
 
     private record Since(Boolean occupied, LocalDateTime at) {
@@ -83,7 +88,8 @@ public class OccupancyTracker {
             }
             return new Reading(occupied, published ? Boolean.TRUE : old.online(), old.illumination(), old.illuminationAt(),
                 old.lux(), old.luxAt(),
-                old.lastMotionAt(), old.motionHeardAt(), old.luxHeardAt(), now, old.confirmedAt());
+                old.lastMotionAt(), old.motionHeardAt(), old.luxHeardAt(), now, old.confirmedAt(), old.motionNow(),
+                old.motionClearedAt());
         });
         settle(sensor.room(), now);
     }
@@ -97,7 +103,8 @@ public class OccupancyTracker {
                 log.info("Presence sensor {} ({}) {} the broker", sensor.id(), sensor.name(), online ? "joined" : "left");
             }
             return new Reading(old.occupied(), online, old.illumination(), old.illuminationAt(), old.lux(), old.luxAt(),
-                old.lastMotionAt(), old.motionHeardAt(), old.luxHeardAt(), online ? now : old.lastReportAt(), old.confirmedAt());
+                old.lastMotionAt(), old.motionHeardAt(), old.luxHeardAt(), online ? now : old.lastReportAt(), old.confirmedAt(),
+                old.motionNow(), old.motionClearedAt());
         });
         settle(sensor.room(), now);
     }
@@ -110,7 +117,8 @@ public class OccupancyTracker {
             return new Reading(old.occupied(), old.online(),
                 word == null ? old.illumination() : word, word == null ? old.illuminationAt() : now,
                 lux == null ? old.lux() : lux, lux == null ? old.luxAt() : now,
-                old.lastMotionAt(), old.motionHeardAt(), old.luxHeardAt(), now, old.confirmedAt());
+                old.lastMotionAt(), old.motionHeardAt(), old.luxHeardAt(), now, old.confirmedAt(), old.motionNow(),
+                old.motionClearedAt());
         });
     }
 
@@ -127,7 +135,8 @@ public class OccupancyTracker {
                 log.debug("Motion sensor {} ({}) in the {}: motion", sensor.id(), sensor.name(), sensor.room().getValue());
             }
             return new Reading(old.occupied(), old.online(), old.illumination(), old.illuminationAt(), old.lux(), old.luxAt(),
-                motion ? now : old.lastMotionAt(), old.motionHeardAt(), old.luxHeardAt(), now, old.confirmedAt());
+                motion ? now : old.lastMotionAt(), old.motionHeardAt(), old.luxHeardAt(), now, old.confirmedAt(),
+                old.motionNow(), old.motionClearedAt());
         });
         return motion;
     }
@@ -151,9 +160,10 @@ public class OccupancyTracker {
             }
             taken.set(motion);
             final LocalDateTime at = heardAt == null ? now : at(heardAt);
+            //HAS-349: a BLU Motion sends the start of a motion and its clear - true is a motion still going on
             return new Reading(old.occupied(), old.online(), old.illumination(), old.illuminationAt(), old.lux(), old.luxAt(),
                 motion ? at : old.lastMotionAt(), heardAt == null ? old.motionHeardAt() : heardAt, old.luxHeardAt(),
-                now, now);
+                now, now, motion, motion ? old.motionClearedAt() : at);
         });
         return taken.get();
     }
@@ -169,7 +179,7 @@ public class OccupancyTracker {
             }
             return new Reading(old.occupied(), old.online(), old.illumination(), old.illuminationAt(),
                 lux, heardAt == null ? now : at(heardAt), old.lastMotionAt(), old.motionHeardAt(),
-                heardAt == null ? old.luxHeardAt() : heardAt, now, now);
+                heardAt == null ? old.luxHeardAt() : heardAt, now, now, old.motionNow(), old.motionClearedAt());
         });
     }
 
@@ -182,7 +192,8 @@ public class OccupancyTracker {
     //a confirmation is not a report: lastReportAt stays what the sensor last said
     private static Reading confirmed(final Reading old, final LocalDateTime now) {
         return new Reading(old.occupied(), old.online(), old.illumination(), old.illuminationAt(), old.lux(), old.luxAt(),
-            old.lastMotionAt(), old.motionHeardAt(), old.luxHeardAt(), old.lastReportAt(), now);
+            old.lastMotionAt(), old.motionHeardAt(), old.luxHeardAt(), old.lastReportAt(), now, old.motionNow(),
+            old.motionClearedAt());
     }
 
     /** The occupancy of a room by its sensors as last read; a room without one has an empty list. */
@@ -198,12 +209,15 @@ public class OccupancyTracker {
             .max(Comparator.comparing(Reading::illuminationAt)).orElse(null);
         final Reading measured = known.stream().filter(reading -> reading.luxAt() != null)
             .max(Comparator.comparing(Reading::luxAt)).orElse(null);
+        final List<Motion> motions = known.stream().map(reading -> motionOf(reading, now)).filter(Objects::nonNull).toList();
 
         return new RoomOccupancy(
             room.getValue(),
             since.occupied(),
             since.occupied() == null ? null : since.at(),
             lastMotionAt,
+            motions.isEmpty() ? null : motions.stream().anyMatch(Motion::going),
+            motions.stream().map(Motion::clearedAt).filter(Objects::nonNull).max(Comparator.naturalOrder()).orElse(null),
             lit == null ? null : lit.illumination(),
             measured == null ? null : measured.lux(),
             sensors.stream().map(sensor -> view(sensor, readings.get(sensor.id()), now)).toList());
@@ -223,6 +237,22 @@ public class OccupancyTracker {
             return true;
         }
         return said.contains(null) ? null : false;
+    }
+
+    //HAS-349: what a BLU Motion says of a motion now - null when it never said. A motion held past
+    //motion-held-at-most counts as ended at its start plus the bound: a lost clear keeps no room occupied
+    private Motion motionOf(final Reading reading, final LocalDateTime now) {
+        if (reading.motionNow() == null) {
+            return null;
+        }
+        if (!reading.motionNow()) {
+            return new Motion(false, reading.motionClearedAt());
+        }
+        final LocalDateTime heldUntil = reading.lastMotionAt().plus(properties.motionHeldAtMost());
+        return heldUntil.isAfter(now) ? new Motion(true, reading.motionClearedAt()) : new Motion(false, heldUntil);
+    }
+
+    private record Motion(boolean going, LocalDateTime clearedAt) {
     }
 
     private static Boolean occupiedOf(final Reading reading) {

@@ -36,6 +36,8 @@ import java.util.Set;
 //  lights that are not on get what the period of the moment gives - no period, no light;
 //- motion-off: motionOffAfterMinutes after the last motion the lights the rule switched on go off, unless a
 //  presence sensor of the room says somebody is there or is not known.
+//A BLU Motion that reports a motion still going on (HAS-349) keeps its room occupied: no auto-off and no
+//motion-off while it does, and both delays count from its clear - the latest of the last motion and the clear.
 //A rule switched off by the resident does nothing
 @NoArgsConstructor(access = AccessLevel.PRIVATE)
 public final class RuleEvaluator {
@@ -167,13 +169,27 @@ public final class RuleEvaluator {
     }
 
     //The motion is over and nobody is known to be there: a presence sensor that says somebody is, or is not
-    //known, keeps the lights on; a last motion not known (a start) decides nothing
+    //known, keeps the lights on; a last motion not known (a start) decides nothing; a motion still going on
+    //(HAS-349) is not over, and the delay counts from its clear
     private static boolean motionOver(final RoomOccupancy occupancy, final RoomRule rule, final LocalDateTime now) {
-        if (occupancy.lastMotionAt() == null
-            || occupancy.lastMotionAt().plusMinutes(rule.motionOffAfterMinutes()).isAfter(now)) {
+        final LocalDateTime lastMotion = lastMotion(occupancy);
+        if (Boolean.TRUE.equals(occupancy.motion()) || lastMotion == null
+            || lastMotion.plusMinutes(rule.motionOffAfterMinutes()).isAfter(now)) {
             return false;
         }
         return !hasPresence(occupancy) || Boolean.FALSE.equals(occupancy.occupied());
+    }
+
+    //the end of the last motion: its start, or the clear of a BLU Motion when that came later (HAS-349)
+    private static LocalDateTime lastMotion(final RoomOccupancy occupancy) {
+        return latest(occupancy.lastMotionAt(), occupancy.motionClearedAt());
+    }
+
+    private static LocalDateTime latest(final LocalDateTime one, final LocalDateTime other) {
+        if (one == null) {
+            return other;
+        }
+        return other == null || one.isAfter(other) ? one : other;
     }
 
     //Since when the room is empty, or why that is not known. since null: somebody is there
@@ -182,14 +198,11 @@ public final class RuleEvaluator {
             if (occupancy.occupied() == null) {
                 return new Emptiness(null, "its presence sensor is not known");
             }
-            if (Boolean.TRUE.equals(occupancy.occupied())) {
+            if (Boolean.TRUE.equals(occupancy.occupied()) || Boolean.TRUE.equals(occupancy.motion())) {
                 return new Emptiness(null, null);
             }
             //nobody by the presence sensor, and no motion since it said so
-            final LocalDateTime since = occupancy.lastMotionAt() != null && occupancy.lastMotionAt().isAfter(occupancy.since())
-                ? occupancy.lastMotionAt()
-                : occupancy.since();
-            return new Emptiness(since, null);
+            return new Emptiness(latest(occupancy.since(), lastMotion(occupancy)), null);
         }
         if (occupancy.sensors().stream().anyMatch(sensor -> Boolean.FALSE.equals(sensor.reachable()))) {
             return new Emptiness(null, "a motion sensor is not reachable");
@@ -197,7 +210,11 @@ public final class RuleEvaluator {
         if (occupancy.lastMotionAt() == null) {
             return new Emptiness(null, "no motion was seen since the start");
         }
-        return new Emptiness(occupancy.lastMotionAt(), null);
+        //HAS-349: a motion still going on is somebody in the room
+        if (Boolean.TRUE.equals(occupancy.motion())) {
+            return new Emptiness(null, null);
+        }
+        return new Emptiness(lastMotion(occupancy), null);
     }
 
     private static boolean hasPresence(final RoomOccupancy occupancy) {

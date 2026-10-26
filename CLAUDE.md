@@ -25,13 +25,13 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
   `database-service` (device registry), `amx-service` (the Eaton lights) and `presence-service`
   (who is at home) over k8s DNS (`internal.service.*`). Everything is routed by `api-gateway-service`
   >= 0.8.0 (`/light`, `/light/**`, every method, HAS-265); the dashboard will branch on the codes.
-- Uses libraries: `cholewa-commons` 1.11.0 (pool, error contract, `DownstreamErrors`, connection
+- Uses libraries: `cholewa-commons` 1.12.0 (pool, error contract, `DownstreamErrors`, connection
   names, `NotificationPublisher`, `cholewa.required-properties`, Logbook in the reactive chain, the
-  scheduler pool and `ScheduledPass`), `smart-home-sdk` 1.12.0
-  (`SmartDevice` and `LightKind` of the registry; a zone as the channel of a presence sensor), `shelly-client` 2.1.0 (`ShellyGen1Client`,
+  scheduler pool and `ScheduledPass`), `smart-home-sdk` 1.14.0
+  (`SmartDevice` and `LightKind` of the registry; a zone as the channel of a presence sensor), `shelly-client` 2.2.0 (`ShellyGen1Client`,
   `ShellyRpcClient`; their calls reach Logbook through the injected builder, HAS-302).
 - Database: own database `home-automation-light`, pool `database.pool.max-size: 2` (heating 2 /
-  database 4 / water 2 / presence 2 / blinds 2 / weather 2 / light 2 = 16 of 22), pinned by
+  database 4 / water 2 / presence 2 / blinds 2 / weather 2 / light 2 / appliance 2 = 18 of the 47 of the managed PostgreSQL, see `organization.md`), pinned by
   `LightServiceApplicationTest`. Tables: `light_state` (`V1`, HAS-259), `light_room_rule` and
   `light_motion_period` (`V2`, HAS-261), `light_rule_run` (`V3`, HAS-262 - its Jira text says `V4`),
   `light_simulation_phase` and `light_simulation_spot` (`V4`, HAS-263), `light_availability_alert` (`V5`,
@@ -76,7 +76,7 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
     in the profile rgb, where `RGBW.Set` does not exist. The profile is read from
     `Shelly.GetStatus` (`rgb:<id>` / `rgbw:<id>`) the first time and kept per address and
     channel; a command that fails forgets it. White for a device in the profile rgb is
-    `UNSUPPORTED_CAPABILITY`. `transition_duration` is not sent - `shelly-client` 2.1.0 has no
+    `UNSUPPORTED_CAPABILITY`. `transition_duration` is not sent - `shelly-client` 2.2.0 has no
     parameter for it.
   - Eaton: `/home/amx/eaton/lights/{point}?turn=` and `/level?value=`; a group point is a light of
     its own in the registry.
@@ -160,7 +160,7 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
 - **Every scheduled task is bounded and they run on a pool** (HAS-302, after blinds-service froze on
   2026-10-22: a pass waited for good on a dead database connection, Spring blocks the scheduler thread
   until a reactive pass completes, and the one thread stopped every task of that service with the health
-  UP). The pool of ten comes from `cholewa-commons` 1.11.0 (pinned by `LightServiceApplicationTest`);
+  UP). The pool of ten comes from `cholewa-commons` 1.11.0 and later (pinned by `LightServiceApplicationTest`);
   every `@Scheduled` method returns `ScheduledPass.bounded(task, LIMIT, ...)`, each pinned by a test that
   hangs the pass:
   - the rules engine and the empty house 55 s - their own 50 s (`PASS_TIMEOUT`) stay inside;
@@ -220,7 +220,14 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
     sensor says so, empty when every one does, otherwise not known - a Presence that left the broker
     is not known; `lastMotionAt` the newest motion of any motion sensor; `illumination` (the word of a
     Presence: dark / twilight / bright at its 10 / 50 lx) and `lux` (a number, BLU Motion or Shelly
-    Motion) each the newest of the room; `since` when the service saw the occupancy change.
+    Motion) each the newest of the room; `since` when the service saw the occupancy change. **A BLU Motion
+    sends the start of a motion and its clear** (HAS-349, after the kitchen ceiling went off on 2026-10-25 while its
+    BLU Motion 98 had reported motion for ten minutes): `Reading.motionNow` keeps its last value and
+    `motionClearedAt` the time of its clear (the later report wins, as before); the room has `motion` while any of
+    them reports one, and the newest clear. A true older than `light.occupancy.motion-held-at-most` (PT60M, 5 min -
+    12 h, minutes) counts as cleared at its start plus the bound - a lost clear packet keeps no light on for good.
+    After a start the value is not known until the first gateway read or status topic. Not for the Shelly Motion
+    Gen1 and the Eaton PIR (no false switch-off seen there).
   - **Which channel says what**: Presence - MQTT `status.presencezone:<zone>` (only its own zone: the
     office device has a second zone, `Door`, which nobody reads), `status.illuminance:0`, `online`;
     every five minutes `OccupancyReads` reads the zone (`Shelly.GetComponents` - it is a dynamic
@@ -288,6 +295,9 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
     by the pass); `retriedAt` keeps it to one until the light reports a change. The empty house and a person's
     commands are never sent once more. A pass cut off by its 50 s leaves the lights it never got to unmarked (the one in flight stays). The decision and the note of its commands are taken together (one lock), so a motion and the pass
     never both command a light.
+  - **A motion going on** (HAS-349): while `RoomOccupancy.motion` is true the room is not empty - no auto-off,
+    whether a presence sensor says nobody or there is none - and no motion-off; both delays count from the later of
+    `lastMotionAt` and `motionClearedAt`. Motion-on is unchanged (a fresh start of motion).
   - **Auto-off**: lights on **or not known to be off** (HAS-308, owner 2026-10-22: an off to a light that may be on
     is harmless) and not held, `autoOffDelayMinutes` after the room is empty - with a presence
     sensor from its `since` (or a later motion), with motion sensors only from the last motion. A presence
