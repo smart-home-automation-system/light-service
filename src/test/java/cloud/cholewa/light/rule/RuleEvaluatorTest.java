@@ -287,6 +287,66 @@ class RuleEvaluatorTest {
         }
     }
 
+    //HAS-349: a BLU Motion that reports a motion still going on keeps its room occupied
+    @Nested
+    class MotionGoingOn {
+
+        private static final LocalDateTime START = LocalDateTime.of(2026, 10, 25, 17, 28, 6);
+        private static final LocalDateTime CLEARED = LocalDateTime.of(2026, 10, 25, 17, 59, 5);
+
+        //the kitchen of 2026-10-25: auto-off switched the ceiling off at 17:38:59 while the sensor had reported
+        //motion since 17:28:06 without a break - now it waits for the clear and counts its 10 minutes from it
+        @Test
+        void should_not_switch_off_while_a_motion_goes_on_and_count_the_delay_from_its_clear() {
+            final LightSnapshot ceiling = light(HALL_LEFT, on("external", START.minusMinutes(30)));
+
+            assertThat(RuleEvaluator.tick(hall(blu(START, true, null, MOTION), ceiling),
+                LocalDateTime.of(2026, 10, 25, 17, 38, 59)).actions()).isEmpty();
+            assertThat(RuleEvaluator.tick(hall(blu(START, true, null, MOTION), ceiling), CLEARED.minusSeconds(1))
+                .actions()).isEmpty();
+
+            final RoomSnapshot cleared = hall(blu(START, false, CLEARED, MOTION), ceiling);
+            assertThat(RuleEvaluator.tick(cleared, CLEARED.plusMinutes(10).minusSeconds(1)).actions()).isEmpty();
+            assertThat(RuleEvaluator.tick(cleared, CLEARED.plusMinutes(10)).actions())
+                .containsExactly(new RuleAction(HALL_LEFT, false, RuleReason.AUTO_OFF, null));
+        }
+
+        //a presence sensor that says nobody is there does not empty a room where a motion goes on
+        @Test
+        void should_keep_a_room_with_a_presence_sensor_occupied_while_a_motion_goes_on() {
+            final LightSnapshot ceiling = light(BEDROOM_CEILING, on("external", START.minusHours(1)));
+            final RoomOccupancy nobody = new RoomOccupancy("bedroom", false, START.minusHours(1), START, true, null,
+                null, 5.0, List.of(PRESENCE, MOTION));
+
+            assertThat(RuleEvaluator.tick(bedroom(nobody, ceiling), START.plusHours(2)).actions()).isEmpty();
+        }
+
+        //motion-off waits for the clear too, and counts its 3 minutes from it
+        @Test
+        void should_not_switch_off_what_the_motion_lit_while_it_goes_on() {
+            final LightSnapshot left = light(HALL_LEFT, on("rule", START));
+
+            assertThat(RuleEvaluator.tick(hall(blu(START, true, null, MOTION), left), START.plusMinutes(20)).actions())
+                .isEmpty();
+
+            final RoomSnapshot cleared = hall(blu(START, false, CLEARED, MOTION), left);
+            assertThat(RuleEvaluator.tick(cleared, CLEARED.plusMinutes(3).minusSeconds(1)).actions()).isEmpty();
+            assertThat(RuleEvaluator.tick(cleared, CLEARED.plusMinutes(3)).actions())
+                .containsExactly(new RuleAction(HALL_LEFT, false, RuleReason.MOTION_OFF, null));
+        }
+
+        //a motion that began after the clear of another counts from its own start
+        @Test
+        void should_count_from_the_later_of_the_last_motion_and_the_clear() {
+            final LightSnapshot ceiling = light(HALL_LEFT, on("external", START.minusMinutes(30)));
+            final LocalDateTime again = CLEARED.plusMinutes(4);
+
+            final RoomSnapshot room = hall(blu(again, false, CLEARED, MOTION), ceiling);
+            assertThat(RuleEvaluator.tick(room, again.plusMinutes(10).minusSeconds(1)).actions()).isEmpty();
+            assertThat(RuleEvaluator.tick(room, again.plusMinutes(10)).actions()).hasSize(1);
+        }
+    }
+
     @Nested
     class MotionOff {
 
@@ -373,6 +433,12 @@ class RuleEvaluatorTest {
 
     private static RoomOccupancy empty(final LocalDateTime since, final LocalDateTime lastMotionAt) {
         return occupancy(false, since, lastMotionAt, null, PRESENCE);
+    }
+
+    //a room with a BLU Motion that says whether a motion is going on (HAS-349)
+    private static RoomOccupancy blu(final LocalDateTime lastMotionAt, final Boolean motion, final LocalDateTime clearedAt,
+                                     final RoomOccupancy.SensorView... sensors) {
+        return new RoomOccupancy("room", null, null, lastMotionAt, motion, clearedAt, null, 5.0, List.of(sensors));
     }
 
     private static RoomOccupancy motionOnly(final LocalDateTime lastMotionAt, final Double lux) {

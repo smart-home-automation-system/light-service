@@ -37,7 +37,7 @@ class OccupancyTrackerTest {
     private final OccupancyRegistry registry = mock(OccupancyRegistry.class);
     private final MovingClock clock = new MovingClock(START);
     private final OccupancyTracker tracker =
-        new OccupancyTracker(registry, new OccupancyProperties(Duration.ofMinutes(30)), clock);
+        new OccupancyTracker(registry, new OccupancyProperties(Duration.ofMinutes(30), Duration.ofMinutes(60)), clock);
 
     @BeforeEach
     void setUp() {
@@ -166,6 +166,61 @@ class OccupancyTrackerTest {
         final RoomOccupancy office = tracker.room(RoomName.OFFICE);
         assertThat(office.lastMotionAt()).isEqualTo(EVENING);
         assertThat(office.lux()).isEqualTo(120.0);
+    }
+
+    //HAS-349: a BLU Motion sends the start of a motion and its clear - true is a motion still going on
+    @Test
+    void should_hold_a_blu_motion_until_its_clear() {
+        tracker.bluMotion(OFFICE_PIR, true, START);
+        clock.advance(Duration.ofMinutes(20));
+
+        final RoomOccupancy moving = tracker.room(RoomName.OFFICE);
+        assertThat(moving.motion()).isTrue();
+        assertThat(moving.lastMotionAt()).isEqualTo(EVENING);
+        assertThat(moving.motionClearedAt()).isNull();
+
+        tracker.bluMotion(OFFICE_PIR, false, START.plusSeconds(1500));
+
+        final RoomOccupancy cleared = tracker.room(RoomName.OFFICE);
+        assertThat(cleared.motion()).isFalse();
+        assertThat(cleared.motionClearedAt()).isEqualTo(EVENING.plusSeconds(1500));
+        assertThat(cleared.lastMotionAt()).isEqualTo(EVENING);
+    }
+
+    //a read of the gateway that brings the state already taken, or an older one, changes nothing
+    @Test
+    void should_keep_a_clear_against_an_older_or_the_same_report() {
+        tracker.bluMotion(OFFICE_PIR, true, START);
+        tracker.bluMotion(OFFICE_PIR, false, START.plusSeconds(60));
+        tracker.bluMotion(OFFICE_PIR, true, START);
+        tracker.bluMotion(OFFICE_PIR, false, START.plusSeconds(60));
+
+        final RoomOccupancy office = tracker.room(RoomName.OFFICE);
+        assertThat(office.motion()).isFalse();
+        assertThat(office.motionClearedAt()).isEqualTo(EVENING.plusSeconds(60));
+    }
+
+    //a lost clear keeps no room occupied for good: past motion-held-at-most it counts as cleared then
+    @Test
+    void should_take_a_motion_held_past_the_bound_as_cleared() {
+        tracker.bluMotion(OFFICE_PIR, true, START);
+        clock.advance(Duration.ofMinutes(59));
+        assertThat(tracker.room(RoomName.OFFICE).motion()).isTrue();
+
+        clock.advance(Duration.ofMinutes(1));
+
+        final RoomOccupancy office = tracker.room(RoomName.OFFICE);
+        assertThat(office.motion()).isFalse();
+        assertThat(office.motionClearedAt()).isEqualTo(EVENING.plusMinutes(60));
+    }
+
+    //nothing known of a motion going on: the field is left out, never false
+    @Test
+    void should_say_nothing_of_a_motion_going_on_before_a_blu_motion_reported() {
+        tracker.motion(SANCTUM, true);
+
+        assertThat(tracker.room(RoomName.SANCTUM).motion()).isNull();
+        assertThat(tracker.room(RoomName.OFFICE).motion()).isNull();
     }
 
     //a BLU sensor sends when it senses; the gateway that stops answering is what makes it unreachable

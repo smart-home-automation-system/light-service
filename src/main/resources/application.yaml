@@ -105,6 +105,9 @@ light:
     # how long a BLU Motion counts as reachable without its gateway confirming it (HAS-260); the
     # gateways are read every 5 min, so 10 min to 24 h - the bound of the window sensors of blinds-service
     gateway-silent-after: PT30M
+    # how long a BLU Motion that reported a motion and never its end still counts as moving (HAS-349): it
+    # sends the start and the clear of a motion, and a lost clear must not keep a room occupied for good
+    motion-held-at-most: PT60M
   # the empty house (HAS-263): how long nobody is at home before the service acts - the lights left on
   # by day, the presence simulation by night; enabled false keeps it from acting, it is still watched
   empty-house:

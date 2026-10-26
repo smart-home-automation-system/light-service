@@ -100,7 +100,11 @@ Everything is non-blocking (Spring WebFlux / Reactor):
   A room is occupied when one presence sensor says so, empty when every one does, and not known
   otherwise - also while one of them is off the broker. `lastMotionAt` is the newest motion of any
   motion sensor of the room, `illumination` the newest word of a Presence (`dark`, `twilight`,
-  `bright`), `lux` the newest number of a motion sensor.
+  `bright`), `lux` the newest number of a motion sensor. A BLU Motion sends the start of a motion and
+  its clear (HAS-349): `motion` is `true` while one of the room reports a motion still going on - the
+  rules then neither switch the room off by auto-off nor by motion-off, and both delays count from the
+  clear, `motionClearedAt`. A motion never cleared counts as ended after `light.occupancy.motion-held-at-most`
+  (`PT60M`, 5 min - 12 h, a bare number is minutes).
 - **Device events** arrive from RabbitMQ, virtual host `/device` (user `device`), queue
   `device.prod.light` (`device.dev.light` in the `local` profile). The queue is bound to
   `amq.topic` with `#`, so it gets every event of every device — the status topics of the
@@ -179,7 +183,8 @@ service does not know is left out**, never answered as off or zero. `anyOn` of a
 when a light is on, `false` when every light is known to be off, and left out otherwise.
 
 The occupancy of a room: `room`, `occupied` (`true` / `false`), `since` (when the service saw it
-change), `lastMotionAt`, `illumination` (`dark`, `twilight`, `bright`), `lux`, and `sensors: [{id, name,
+change), `lastMotionAt`, `motion` (a BLU Motion reports a motion going on, HAS-349), `motionClearedAt` (when the
+newest such motion ended), `illumination` (`dark`, `twilight`, `bright`), `lux`, and `sensors: [{id, name,
 kind, lastReportAt, reachable}]` - **each left out while it is not known**: no rule may act on a room
 that only looks empty.
 

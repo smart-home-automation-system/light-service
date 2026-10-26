@@ -54,6 +54,33 @@ class OccupancyPropertiesTest {
             .run(context -> assertThat(context).hasFailed());
     }
 
+    //HAS-349: a motion never cleared counts as going on for an hour at most, a bare number is minutes
+    @Test
+    void should_hold_a_motion_never_cleared_for_an_hour_at_most() {
+        contextRunner
+            .withPropertyValues("spring.profiles.active=home")
+            .run(context -> assertThat(context.getBean(OccupancyProperties.class).motionHeldAtMost())
+                .isEqualTo(Duration.ofMinutes(60)));
+        contextRunner
+            .withPropertyValues("spring.profiles.active=home", "light.occupancy.motion-held-at-most=90")
+            .run(context -> assertThat(context.getBean(OccupancyProperties.class).motionHeldAtMost())
+                .isEqualTo(Duration.ofMinutes(90)));
+    }
+
+    //less than five minutes would cut a motion short; more than twelve hours would keep a lost clear all night
+    @ParameterizedTest
+    @ValueSource(strings = {
+        "light.occupancy.motion-held-at-most=0",
+        "light.occupancy.motion-held-at-most=4",
+        "light.occupancy.motion-held-at-most=PT12H1M",
+        "light.occupancy.motion-held-at-most="
+    })
+    void should_not_start_with_a_motion_bound_out_of_its_range(final String heldAtMost) {
+        contextRunner
+            .withPropertyValues("spring.profiles.active=home", heldAtMost)
+            .run(context -> assertThat(context).hasFailed());
+    }
+
     @Configuration
     @EnableConfigurationProperties(OccupancyProperties.class)
     static class Properties {
