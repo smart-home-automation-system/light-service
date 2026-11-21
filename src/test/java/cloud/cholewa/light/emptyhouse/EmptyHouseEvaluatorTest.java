@@ -54,7 +54,9 @@ class EmptyHouseEvaluatorTest {
     void should_leave_alone_a_light_somebody_switched_after_the_house_became_empty() {
         final List<LightSnapshot> lights = List.of(
             light(KITCHEN_CEILING, true, "external", EMPTY_SINCE.plusHours(1)),
-            light(BEDROOM_CEILING, false, "dashboard", EMPTY_SINCE.plusMinutes(5)));
+            light(BEDROOM_CEILING, false, "dashboard", EMPTY_SINCE.plusMinutes(5)),
+            //safety-service at a fire alarm - HAS-465
+            light(HALL_LEFT, true, "safety", EMPTY_SINCE.plusMinutes(20)));
 
         assertThat(EmptyHouseEvaluator.decide(lights, Set.of(), false, EMPTY_SINCE)).isEmpty();
         assertThat(EmptyHouseEvaluator.decide(lights, Set.of(BEDROOM_CEILING.id()), true, EMPTY_SINCE)).isEmpty();

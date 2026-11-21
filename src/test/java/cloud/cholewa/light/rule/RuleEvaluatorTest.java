@@ -175,6 +175,16 @@ class RuleEvaluatorTest {
             assertThat(RuleEvaluator.tick(room, EVENING.plusMinutes(30)).actions()).hasSize(2);
         }
 
+        //a light safety-service switched on at a fire alarm is held like a person's change (HAS-465)
+        @Test
+        void should_hold_a_light_switched_by_safety_like_a_person() {
+            final RoomSnapshot room = bedroom(empty(EVENING.minusHours(1), null),
+                light(BEDROOM_CEILING, on("safety", EVENING.minusMinutes(30))));
+
+            assertThat(RuleEvaluator.tick(room, EVENING).actions()).isEmpty();
+            assertThat(RuleEvaluator.tick(room, EVENING.plusMinutes(30)).actions()).hasSize(1);
+        }
+
         //a change of this service starts no hold
         @Test
         void should_hold_nothing_the_rules_or_the_empty_house_switched() {

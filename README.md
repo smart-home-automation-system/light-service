@@ -11,7 +11,7 @@
 
 ![GitHub top language](https://img.shields.io/github/languages/top/smart-home-automation-system/light-service?style=plastic)
 ![Java](https://img.shields.io/badge/java-21-yellow?style=plastic)
-![SpringBoot](https://img.shields.io/badge/SpringBoot-4.1.2-blue?style=plastic)
+![SpringBoot](https://img.shields.io/badge/SpringBoot-4.1.3-blue?style=plastic)
 [![Coverage](https://sonarcloud.io/api/project_badges/measure?project=smart-home-automation-system_light-service&metric=coverage)](https://sonarcloud.io/summary/new_code?id=smart-home-automation-system_light-service)
 [![Lines of Code](https://sonarcloud.io/api/project_badges/measure?project=smart-home-automation-system_light-service&metric=ncloc)](https://sonarcloud.io/summary/new_code?id=smart-home-automation-system_light-service)
 
@@ -151,8 +151,8 @@ Everything is non-blocking (Spring WebFlux / Reactor):
 
 Base path `/home/light` (`spring.webflux.base-path`), routed by `api-gateway-service` >= 0.8.0
 (`/home/light`, `/home/light/**`, every method - HAS-265). Every command answers **202** once the device (or `amx-service`) took it - never once
-the light is on. `source` is `dashboard` (the default), `rule` or `empty-house`; every value is
-taken exactly as written.
+the light is on. `source` is `dashboard` (the default), `rule`, `empty-house` or `safety` (safety-service at a fire
+alarm, HAS-465 - held like a person's change); every value is taken exactly as written.
 
 | Method | Path | Parameters / body | Answer |
 |---|---|---|---|
