@@ -25,13 +25,13 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
   `database-service` (device registry), `amx-service` (the Eaton lights) and `presence-service`
   (who is at home) over k8s DNS (`internal.service.*`). Everything is routed by `api-gateway-service`
   >= 0.8.0 (`/light`, `/light/**`, every method, HAS-265); the dashboard will branch on the codes.
-- Uses libraries: `cholewa-commons` 1.12.0 (pool, error contract, `DownstreamErrors`, connection
+- Uses libraries: `cholewa-commons` 1.14.0 (pool, error contract, `DownstreamErrors`, connection
   names, `NotificationPublisher`, `cholewa.required-properties`, Logbook in the reactive chain, the
-  scheduler pool and `ScheduledPass`), `smart-home-sdk` 1.14.0
-  (`SmartDevice` and `LightKind` of the registry; a zone as the channel of a presence sensor), `shelly-client` 2.2.0 (`ShellyGen1Client`,
+  scheduler pool and `ScheduledPass`), `smart-home-sdk` 1.24.0
+  (`SmartDevice` and `LightKind` of the registry; a zone as the channel of a presence sensor), `shelly-client` 2.7.0 (`ShellyGen1Client`,
   `ShellyRpcClient`; their calls reach Logbook through the injected builder, HAS-302).
-- Database: own database `home-automation-light`, pool `database.pool.max-size: 2` (heating 2 /
-  database 4 / water 2 / presence 2 / blinds 2 / weather 2 / light 2 / appliance 2 = 18 of the 47 of the managed PostgreSQL, see `organization.md`), pinned by
+- Database: own database `home-automation-light`, pool `database.pool.max-size: 2` (2 of the
+  26 of the 47 of the managed PostgreSQL allotted to the services, see `organization.md`), pinned by
   `LightServiceApplicationTest`. Tables: `light_state` (`V1`, HAS-259), `light_room_rule` and
   `light_motion_period` (`V2`, HAS-261), `light_rule_run` (`V3`, HAS-262 - its Jira text says `V4`),
   `light_simulation_phase` and `light_simulation_spot` (`V4`, HAS-263), `light_availability_alert` (`V5`,
@@ -76,7 +76,7 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
     in the profile rgb, where `RGBW.Set` does not exist. The profile is read from
     `Shelly.GetStatus` (`rgb:<id>` / `rgbw:<id>`) the first time and kept per address and
     channel; a command that fails forgets it. White for a device in the profile rgb is
-    `UNSUPPORTED_CAPABILITY`. `transition_duration` is not sent - `shelly-client` 2.2.0 has no
+    `UNSUPPORTED_CAPABILITY`. `transition_duration` is not sent - `shelly-client` (2.7.0) has no
     parameter for it.
   - Eaton: `/home/amx/eaton/lights/{point}?turn=` and `/level?value=`; a group point is a light of
     its own in the registry.
@@ -87,7 +87,10 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
   light after the other, each with its own error handling; a room where no light took the command
   fails. **A command writes no state** - whether a light is on comes from the devices (HAS-259).
 - **`source` is the caller's word** — nothing behind the gateway is authenticated; the rules and
-  the empty house will call the service in-process.
+  the empty house call the service in-process. **`safety`** (HAS-465) is safety-service switching the lights on
+  at a fire alarm: not one of the service's own sources (`rule`, `empty-house`), so its change is held like a
+  person's (`manualHoldMinutes` of the room rule) and the empty house leaves it alone - no special case, the
+  rule of every foreign source.
 - **The codes of `LightError` are wire contract** (`LightErrorTest`); a new or renamed code
   needs a text in the dashboard.
 - **The state (HAS-259) is merged in `LightStateTracker`**, in memory; `decide()` is pure and holds
@@ -279,7 +282,7 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
     engine's copy of the rules**: every write of `RoomRuleService` puts its answer there at once, a pass that
     read before a write may bring the old rule back for a minute.
   - **The manual hold is derived from the state, not stored**: a light whose last change has a source other
-    than `rule` / `empty-house` (a wall switch, the Shelly app, an AMX panel, the dashboard, `external`) is held
+    than `rule` / `empty-house` (a wall switch, the Shelly app, an AMX panel, the dashboard, `safety`, `external`) is held
     for the room's `manualHoldMinutes` from its `changedAt` - so it survives a restart with `light_state`.
     The reads answer it as `heldUntil` while it lasts (by the `RuleBook`; left out with no rule).
   - **Once**: a light the engine sent a command to gets no other until it reports a change (`changedAt` after the

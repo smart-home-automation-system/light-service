@@ -85,7 +85,7 @@ class LightControllerTest {
     }
 
     @ParameterizedTest
-    @CsvSource({"dashboard,DASHBOARD", "rule,RULE", "empty-house,EMPTY_HOUSE"})
+    @CsvSource({"dashboard,DASHBOARD", "rule,RULE", "empty-house,EMPTY_HOUSE", "safety,SAFETY"})
     void should_pass_who_asked_for_the_command(final String parameter, final CommandSource source) {
         when(lightCommandService.turn(21, Turn.OFF, source)).thenReturn(Mono.empty());
 

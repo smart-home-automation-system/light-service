@@ -80,7 +80,7 @@ public class LightController {
 
     private static CommandSource source(final String source) {
         return CommandSource.ofParameter(source)
-            .orElseThrow(() -> new ServerWebInputException("source must be dashboard, rule or empty-house"));
+            .orElseThrow(() -> new ServerWebInputException("source must be dashboard, rule, empty-house or safety"));
     }
 
     //nothing in the body has a default: a part left out is kept by the device, but a body with no

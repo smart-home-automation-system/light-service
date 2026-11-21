@@ -5,11 +5,13 @@ import java.util.Optional;
 
 /**
  * Who asked for a command, by the value of the {@code source} parameter: a person on the dashboard,
- * a rule of a room, or the empty house. Written to the log of every command; the state of a light
- * takes it with HAS-259.
+ * a rule of a room, the empty house, or safety-service at a fire alarm (HAS-465). Written to the log of
+ * every command; the state of a light takes it with HAS-259. Every source but {@code rule} and
+ * {@code empty-house} is not this service's own: its change is held like a person's (the manual hold of
+ * the room rule) and the empty house never acts against it.
  */
 public enum CommandSource {
-    DASHBOARD("dashboard"), RULE("rule"), EMPTY_HOUSE("empty-house");
+    DASHBOARD("dashboard"), RULE("rule"), EMPTY_HOUSE("empty-house"), SAFETY("safety");
 
     private final String value;
 
