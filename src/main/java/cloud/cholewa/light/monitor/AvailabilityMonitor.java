@@ -4,7 +4,9 @@ import cloud.cholewa.commons.notification.NotificationPublisher;
 import cloud.cholewa.commons.scheduling.ScheduledPass;
 import cloud.cholewa.light.config.MonitorProperties;
 import cloud.cholewa.light.database.model.AvailabilityAlertEntity;
+import cloud.cholewa.light.database.model.BatteryAlertEntity;
 import cloud.cholewa.light.database.repository.AvailabilityAlertRepository;
+import cloud.cholewa.light.database.repository.BatteryAlertRepository;
 import cloud.cholewa.light.model.Light;
 import cloud.cholewa.light.model.LightBinding;
 import cloud.cholewa.light.monitor.AvailabilityEvaluator.Alert;
@@ -49,6 +51,10 @@ import java.util.stream.Stream;
 //- A sensor is heard when it reports (OccupancyTracker), a BLU Motion also by any packet a gateway heard of it
 //  (HAS-529); one never heard since the start counts from the start. The PIRs of the AMX system (they report only
 //  after dark) and the Shelly Motion Gen1 (it sleeps, no heartbeat - HAS-529) are not watched.
+//- HAS-530: the battery of every BLU Motion against light.monitor.battery-low-below - one warning naming the sensors
+//  newly below it (category alert, level warn: the technical channel, never the household, never an SMS), no
+//  reminder, one info for the ones back above it; kept in light_battery_alert. Its own error handling: a failed
+//  battery pass never keeps the availability from being judged, nor the other way round.
 //- The table changes only once the broker has taken the message; a notification that fails is tried again with
 //  the next pass, and neither fails nor stalls the pass for longer than PUBLISH_TIMEOUT
 @Slf4j
@@ -67,6 +73,7 @@ public class AvailabilityMonitor {
     private final OccupancyRegistry occupancyRegistry;
     private final OccupancyTracker occupancyTracker;
     private final AvailabilityAlertRepository alertRepository;
+    private final BatteryAlertRepository batteryAlertRepository;
     private final R2dbcEntityTemplate entityTemplate;
     private final NotificationPublisher notificationPublisher;
     private final MonitorProperties properties;
@@ -82,6 +89,7 @@ public class AvailabilityMonitor {
         final OccupancyRegistry occupancyRegistry,
         final OccupancyTracker occupancyTracker,
         final AvailabilityAlertRepository alertRepository,
+        final BatteryAlertRepository batteryAlertRepository,
         final R2dbcEntityTemplate entityTemplate,
         final NotificationPublisher notificationPublisher,
         final MonitorProperties properties,
@@ -92,6 +100,7 @@ public class AvailabilityMonitor {
         this.occupancyRegistry = occupancyRegistry;
         this.occupancyTracker = occupancyTracker;
         this.alertRepository = alertRepository;
+        this.batteryAlertRepository = batteryAlertRepository;
         this.entityTemplate = entityTemplate;
         this.notificationPublisher = notificationPublisher;
         this.properties = properties;
@@ -102,10 +111,11 @@ public class AvailabilityMonitor {
     //Spring subscribes again to the same Mono for every run: everything is read inside the chain. Two minutes
     //in: the lights and the sensors are known by then, and a Gen1 poll has run
     //Bounded (HAS-302): the trackers, the alerts of the database and at most a notification a kind (each cut
-    //off after 30 s) - a pass beyond this is hung and ends; the next one judges again
+    //off after 30 s), then the batteries (HAS-530, two more at most) - a pass beyond this is hung and ends, a part it
+    //never got to included; the next one judges again
     @Scheduled(initialDelayString = "PT2M", fixedDelayString = "PT1M")
     Mono<Void> check() {
-        return ScheduledPass.bounded("light availability monitor", LIMIT, this::checkOnce);
+        return ScheduledPass.bounded("light availability monitor", LIMIT, () -> checkOnce().then(checkBatteries()));
     }
 
     private Mono<Void> checkOnce() {
@@ -124,6 +134,73 @@ public class AvailabilityMonitor {
                 log.error("The availability check failed: {}", e.toString());
                 return Mono.empty();
             });
+    }
+
+    //HAS-530: the battery of every BLU Motion of the registry, a level not known never low
+    private Mono<Void> checkBatteries() {
+        return Mono.defer(() -> {
+                if (!occupancyRegistry.loaded()) {
+                    return Mono.empty();
+                }
+                final LocalDateTime now = now();
+                final List<BatteryEvaluator.Level> levels = occupancyRegistry.sensors().stream()
+                    .filter(sensor -> sensor.binding() instanceof SensorBinding.BluMotion)
+                    .map(sensor -> new BatteryEvaluator.Level(sensor.id(), sensor.name(), sensor.room().getValue(),
+                        occupancyTracker.batteryOf(sensor).orElse(null)))
+                    .toList();
+                return batteryAlertRepository.findAll()
+                    .collectMap(BatteryAlertEntity::deviceId, AvailabilityMonitor::toWarning)
+                    .flatMap(open -> actOnBatteries(BatteryEvaluator.decide(levels, open, now, properties.batteryLowBelow())));
+            })
+            .onErrorResume(e -> {
+                log.error("The battery check failed: {}", e.toString());
+                return Mono.empty();
+            });
+    }
+
+    //returns first, then the warnings; the table follows the broker, as for the availability
+    private Mono<Void> actOnBatteries(final BatteryEvaluator.Decision decision) {
+        if (decision.nothing()) {
+            return Mono.empty();
+        }
+        return Flux.fromIterable(decision.forgotten())
+            .concatMap(warning -> batteryAlertRepository.deleteById(warning.id())
+                .doOnSuccess(unused -> log.info("Battery warning of device {} ({}) closed: it is no longer watched",
+                    warning.id(), warning.name())))
+            .then(publish(decision.returns().isEmpty(), notificationPublisher::publishInfo, batteryBackText(decision.returns()), "Battery")
+                .flatMap(sent -> Flux.fromIterable(decision.returns())
+                    .concatMap(level -> batteryAlertRepository.deleteById(level.id())).then()))
+            .then(publish(decision.warnings().isEmpty(), notificationPublisher::publishReminder, batteryLowText(decision.warnings()), "Battery")
+                .flatMap(sent -> Flux.fromIterable(decision.warnings())
+                    .concatMap(warning -> entityTemplate.insert(toEntity(warning))).then()));
+    }
+
+    String batteryLowText(final List<BatteryEvaluator.Warning> warnings) {
+        return "Low battery: " + warnings.stream().limit(MAX_LISTED)
+            .map(warning -> "the motion sensor " + warning.name() + " (" + warning.room() + ", " + warning.id() + ") at "
+                + warning.level() + " %")
+            .collect(Collectors.joining("; ")) + more(warnings.size()) + " - below " + properties.batteryLowBelow()
+            + " %, replace the battery.";
+    }
+
+    String batteryBackText(final List<BatteryEvaluator.Level> levels) {
+        return "Battery fine again: " + levels.stream().limit(MAX_LISTED)
+            .map(level -> "the motion sensor " + level.name() + " (" + level.room() + ", " + level.id() + ") at "
+                + level.level() + " %")
+            .collect(Collectors.joining("; ")) + more(levels.size()) + ".";
+    }
+
+    private static String more(final int size) {
+        return size > MAX_LISTED ? "; and " + (size - MAX_LISTED) + " more" : "";
+    }
+
+    private static BatteryEvaluator.Warning toWarning(final BatteryAlertEntity row) {
+        return new BatteryEvaluator.Warning(row.deviceId(), row.name(), row.room(), row.level(), row.since());
+    }
+
+    private static BatteryAlertEntity toEntity(final BatteryEvaluator.Warning warning) {
+        return new BatteryAlertEntity(warning.id(), Objects.requireNonNullElse(warning.name(), "?"), warning.room(),
+            warning.level(), truncated(warning.since()));
     }
 
     private Mono<List<Watched>> lights(final LocalDateTime now) {
@@ -178,15 +255,21 @@ public class AvailabilityMonitor {
 
     //Mono.just(true) once the broker took it; empty when there was nothing or it failed (logged, tried again)
     private Mono<Boolean> publish(final List<Alert> alerts, final Function<String, Mono<Void>> publisher, final String text) {
-        if (alerts.isEmpty()) {
+        return publish(alerts.isEmpty(), publisher, text, "Availability");
+    }
+
+    //what: the word that starts the log lines - Availability or Battery
+    private Mono<Boolean> publish(final boolean nothing, final Function<String, Mono<Void>> publisher, final String text,
+                                  final String what) {
+        if (nothing) {
             return Mono.empty();
         }
         return publisher.apply(text)
             .timeout(PUBLISH_TIMEOUT)
             .thenReturn(true)
-            .doOnNext(sent -> log.info("Availability notification published: {}", text))
+            .doOnNext(sent -> log.info("{} notification published: {}", what, text))
             .onErrorResume(e -> {
-                log.error("Availability notification not published, it is tried again with the next pass: {}", e.toString());
+                log.error("{} notification not published, it is tried again with the next pass: {}", what, e.toString());
                 return Mono.empty();
             });
     }

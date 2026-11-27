@@ -162,8 +162,8 @@ class OccupancyTrackerTest {
         assertThat(tracker.lastHeardAt(OFFICE_PIR)).isEmpty();
 
         tracker.bluMotion(OFFICE_PIR, true, START.minusSeconds(2 * 86_400));
-        tracker.bluDevice(OFFICE_PIR, START.minusSeconds(7_200));
-        tracker.bluDevice(OFFICE_PIR, START.minusSeconds(9_000));
+        tracker.bluDevice(OFFICE_PIR, START.minusSeconds(7_200), null);
+        tracker.bluDevice(OFFICE_PIR, START.minusSeconds(9_000), null);
 
         assertThat(tracker.lastHeardAt(OFFICE_PIR)).contains(EVENING.minusSeconds(7_200));
         final RoomOccupancy office = tracker.room(RoomName.OFFICE);
@@ -176,7 +176,7 @@ class OccupancyTrackerTest {
     @Test
     void should_date_a_blu_motion_by_its_gateway_and_a_presence_by_its_report() {
         tracker.bluMotion(OFFICE_PIR, true, START.minusSeconds(2 * 86_400));
-        tracker.bluDevice(OFFICE_PIR, null);
+        tracker.bluDevice(OFFICE_PIR, null, null);
         assertThat(tracker.lastHeardAt(OFFICE_PIR)).contains(EVENING.minusSeconds(2 * 86_400));
 
         tracker.bluMotion(OFFICE_PIR, true, null);
@@ -184,6 +184,32 @@ class OccupancyTrackerTest {
 
         tracker.presence(DESK, true, true);
         assertThat(tracker.lastHeardAt(DESK)).contains(EVENING);
+    }
+
+    //HAS-530: the battery of the latest packet of any gateway; a value out of 0-100 is no level; served in the read
+    @Test
+    void should_keep_the_battery_of_the_latest_packet() {
+        assertThat(tracker.batteryOf(OFFICE_PIR)).isEmpty();
+
+        tracker.bluDevice(OFFICE_PIR, START.minusSeconds(60), 18);
+        tracker.bluDevice(OFFICE_PIR, START.minusSeconds(3_600), 100);
+        tracker.bluDevice(OFFICE_PIR, START.minusSeconds(30), 255);
+
+        assertThat(tracker.batteryOf(OFFICE_PIR)).contains(18);
+        assertThat(tracker.room(RoomName.OFFICE).sensors().get(2).battery()).isEqualTo(18);
+        assertThat(tracker.room(RoomName.OFFICE).sensors().get(0).battery()).isNull();
+    }
+
+    //a level without the time of its packet only while none is known - it never beats a packet dated by a gateway
+    @Test
+    void should_take_a_battery_without_a_time_only_while_none_is_known() {
+        tracker.bluDevice(OFFICE_PIR, null, 50);
+        assertThat(tracker.batteryOf(OFFICE_PIR)).contains(50);
+
+        tracker.bluDevice(OFFICE_PIR, START.minusSeconds(3_600), 18);
+        tracker.bluDevice(OFFICE_PIR, null, 90);
+
+        assertThat(tracker.batteryOf(OFFICE_PIR)).contains(18);
     }
 
     //a status topic of a BLU Motion over MQTT is a packet of its device too, dated by its gateway

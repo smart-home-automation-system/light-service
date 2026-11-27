@@ -117,13 +117,15 @@ light:
   # polled every minute), a presence sensor silent for sensor-silent-after (it publishes about once a minute),
   # a BLU Motion no gateway heard a packet of for battery-silent-after (HAS-529: by the last packet of the device,
   # not its last motion); an outage that goes on is repeated every reminder-every, a BLU Motion every
-  # battery-reminder-every
+  # battery-reminder-every; a BLU Motion whose battery falls below battery-low-below per cent is a warning of its own,
+  # once, and an info once it is back above (HAS-530)
   monitor:
     offline-after: PT5M
     reminder-every: PT1H
     sensor-silent-after: PT30M
     battery-silent-after: PT24H
     battery-reminder-every: PT24H
+    battery-low-below: 20
   # where the house is, for the sunrise and the dusk of the presence simulation. No default on purpose:
   # a private fact, the manifest gives it (as for blinds-service); without it the service does not start
   location:

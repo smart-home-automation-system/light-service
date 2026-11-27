@@ -27,7 +27,7 @@ class MonitorPropertiesTest {
         contextRunner
             .withPropertyValues("spring.profiles.active=home")
             .run(context -> assertThat(context.getBean(MonitorProperties.class)).isEqualTo(new MonitorProperties(
-                Duration.ofMinutes(5), Duration.ofHours(1), Duration.ofMinutes(30), Duration.ofHours(24), Duration.ofHours(24))));
+                Duration.ofMinutes(5), Duration.ofHours(1), Duration.ofMinutes(30), Duration.ofHours(24), Duration.ofHours(24), 20)));
     }
 
     //without the unit a bare number would bind as milliseconds: every light out after a failed poll
@@ -56,6 +56,8 @@ class MonitorPropertiesTest {
         "light.monitor.battery-silent-after=PT169H",
         "light.monitor.battery-reminder-every=59",
         "light.monitor.battery-reminder-every=PT169H",
+        "light.monitor.battery-low-below=4",
+        "light.monitor.battery-low-below=51",
         "light.monitor.offline-after="
     })
     void should_not_start_with_a_limit_out_of_its_range(final String value) {

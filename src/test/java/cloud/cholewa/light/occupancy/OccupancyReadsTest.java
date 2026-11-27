@@ -76,8 +76,8 @@ class OccupancyReadsTest {
 
         reads.read().as(StepVerifier::create).verifyComplete();
 
-        verify(tracker).bluDevice(OFFICE_PIR, Instant.ofEpochSecond(1792405079));
-        verify(tracker, times(1)).bluDevice(any(), any());
+        verify(tracker).bluDevice(OFFICE_PIR, Instant.ofEpochSecond(1792405079), 100);
+        verify(tracker, times(1)).bluDevice(any(), any(), any());
     }
 
     @Test
@@ -87,7 +87,7 @@ class OccupancyReadsTest {
 
         reads.read().as(StepVerifier::create).verifyComplete();
 
-        verify(tracker).bluDevice(OFFICE_PIR, null);
+        verify(tracker).bluDevice(OFFICE_PIR, null, null);
     }
 
     //a component without a status - the gateway stands for the sensor all the same

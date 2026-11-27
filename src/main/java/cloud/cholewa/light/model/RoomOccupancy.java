@@ -36,8 +36,18 @@ public record RoomOccupancy(
         this(room, occupied, since, lastMotionAt, null, null, illumination, lux, sensors);
     }
 
-    /** One sensor of the room: {@code reachable} left out where nothing can tell (a sleeping sensor). */
+    /**
+     * One sensor of the room: {@code reachable} left out where nothing can tell (a sleeping sensor); {@code battery}
+     * the per cent a BLU Motion reports (HAS-530), left out while not known and for every other sensor.
+     */
     @JsonInclude(JsonInclude.Include.NON_NULL)
-    public record SensorView(long id, String name, String kind, LocalDateTime lastReportAt, Boolean reachable) {
+    public record SensorView(long id, String name, String kind, LocalDateTime lastReportAt, Boolean reachable,
+                             Integer battery) {
+
+        /** A sensor whose battery is not known. */
+        public SensorView(final long id, final String name, final String kind, final LocalDateTime lastReportAt,
+                          final Boolean reachable) {
+            this(id, name, kind, lastReportAt, reachable, null);
+        }
     }
 }

@@ -7,7 +7,9 @@ import cloud.cholewa.home.model.RoomName;
 import cloud.cholewa.home.model.SmartVendor;
 import cloud.cholewa.light.config.MonitorProperties;
 import cloud.cholewa.light.database.model.AvailabilityAlertEntity;
+import cloud.cholewa.light.database.model.BatteryAlertEntity;
 import cloud.cholewa.light.database.repository.AvailabilityAlertRepository;
+import cloud.cholewa.light.database.repository.BatteryAlertRepository;
 import cloud.cholewa.light.model.Light;
 import cloud.cholewa.light.model.LightBinding;
 import cloud.cholewa.light.model.LightStatus;
@@ -89,15 +91,16 @@ class AvailabilityMonitorTest {
     private final OccupancyRegistry occupancyRegistry = mock(OccupancyRegistry.class);
     private final OccupancyTracker occupancyTracker = mock(OccupancyTracker.class);
     private final AvailabilityAlertRepository alertRepository = mock(AvailabilityAlertRepository.class);
+    private final BatteryAlertRepository batteryAlertRepository = mock(BatteryAlertRepository.class);
     private final R2dbcEntityTemplate entityTemplate = mock(R2dbcEntityTemplate.class);
     private final NotificationPublisher notificationPublisher = mock(NotificationPublisher.class);
     private AvailabilityMonitor monitor;
 
     @BeforeEach
     void setUp() {
-        monitor = new AvailabilityMonitor(lightRegistry, lightStateTracker, occupancyRegistry, occupancyTracker, alertRepository,
+        monitor = new AvailabilityMonitor(lightRegistry, lightStateTracker, occupancyRegistry, occupancyTracker, alertRepository, batteryAlertRepository,
             entityTemplate, notificationPublisher, new MonitorProperties(Duration.ofMinutes(5), Duration.ofHours(1),
-            Duration.ofMinutes(30), Duration.ofHours(24), Duration.ofHours(24)), clock);
+            Duration.ofMinutes(30), Duration.ofHours(24), Duration.ofHours(24), 20), clock);
         when(lightRegistry.loaded()).thenReturn(true);
         when(occupancyRegistry.loaded()).thenReturn(true);
         when(lightRegistry.current()).thenReturn(List.of(TOBI_MAIN, LIVIA_DESK, STAIRS));
@@ -105,6 +108,9 @@ class AvailabilityMonitorTest {
         when(occupancyRegistry.sensors()).thenReturn(List.of(PRESENCE, PIR));
         when(occupancyTracker.lastHeardAt(PRESENCE)).thenAnswer(invocation -> Optional.of(now.get()));
         when(alertRepository.findAll()).thenReturn(Flux.empty());
+        when(batteryAlertRepository.findAll()).thenReturn(Flux.empty());
+        when(batteryAlertRepository.deleteById(anyLong())).thenReturn(Mono.empty());
+        when(entityTemplate.insert(any(BatteryAlertEntity.class))).thenAnswer(invocation -> Mono.just(invocation.getArgument(0)));
         when(entityTemplate.insert(any(AvailabilityAlertEntity.class))).thenAnswer(invocation -> Mono.just(invocation.getArgument(0)));
         when(alertRepository.deleteById(anyLong())).thenReturn(Mono.empty());
         when(alertRepository.reminded(anyLong(), any())).thenReturn(Mono.just(1));
@@ -277,6 +283,54 @@ class AvailabilityMonitorTest {
 
         verify(alertRepository).deleteById(999L);
         verify(notificationPublisher, never()).publishInfo(anyString());
+    }
+
+    //HAS-530: a battery below the threshold - one warning on the technical channel, its row written; no SMS, no household
+    @Test
+    void should_warn_once_of_a_low_battery_and_keep_the_warning() {
+        when(occupancyRegistry.sensors()).thenReturn(List.of(PRESENCE, BLU));
+        when(occupancyTracker.lastHeardAt(BLU)).thenReturn(Optional.of(START));
+        when(occupancyTracker.batteryOf(BLU)).thenReturn(Optional.of(15));
+
+        check();
+
+        verify(notificationPublisher).publishReminder(
+            "Low battery: the motion sensor Motion sensor (sanctum, 102) at 15 % - below 20 %, replace the battery.");
+        verify(entityTemplate).insert(new BatteryAlertEntity(102L, "Motion sensor", "sanctum", 15, START));
+        verify(notificationPublisher, never()).publishAlertSms(anyString());
+        verify(notificationPublisher, never()).publishHousehold(anyString());
+    }
+
+    //HAS-530: warned already - no reminder; a replaced battery - one info, the row deleted
+    @Test
+    void should_not_remind_a_low_battery_and_tell_a_replaced_one() {
+        when(occupancyRegistry.sensors()).thenReturn(List.of(PRESENCE, BLU));
+        when(occupancyTracker.lastHeardAt(BLU)).thenReturn(Optional.of(START));
+        when(occupancyTracker.batteryOf(BLU)).thenReturn(Optional.of(10));
+        when(batteryAlertRepository.findAll()).thenReturn(Flux.just(
+            new BatteryAlertEntity(102L, "Motion sensor", "sanctum", 15, START.minusDays(2))));
+
+        check();
+        verify(notificationPublisher, never()).publishReminder(anyString());
+
+        when(occupancyTracker.batteryOf(BLU)).thenReturn(Optional.of(100));
+        check();
+
+        verify(notificationPublisher).publishInfo("Battery fine again: the motion sensor Motion sensor (sanctum, 102) at 100 %.");
+        verify(batteryAlertRepository).deleteById(102L);
+    }
+
+    //HAS-530: a battery check that fails keeps nothing else from running
+    @Test
+    void should_judge_the_availability_when_the_battery_check_fails() {
+        when(batteryAlertRepository.findAll()).thenReturn(Flux.error(new IllegalStateException("database away")));
+        when(occupancyTracker.lastHeardAt(PRESENCE)).thenReturn(Optional.empty());
+        now.set(START.plusMinutes(30));
+
+        check();
+
+        verify(notificationPublisher).publishAlert(
+            "Not available: the presence sensor Presence (livia, 92) is silent since 2026-10-20 12:00 (30 min).");
     }
 
     //a Wi-Fi outage: ten devices by name, the rest counted

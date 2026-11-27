@@ -45,6 +45,11 @@ public class OccupancyTracker {
     //HAS-529: when a gateway last heard any packet of a BLU Motion (its bthomedevice) - sent without a motion too,
     //so a sensor in an unused dark room is still heard; the newest of all gateways
     private final Map<Long, LocalDateTime> devicesHeardAt = new ConcurrentHashMap<>();
+    //HAS-530: the battery a gateway last reported of a BLU Motion, with the time of that packet - the latest wins
+    private final Map<Long, Battery> batteries = new ConcurrentHashMap<>();
+
+    private record Battery(int level, LocalDateTime heardAt) {
+    }
 
     public OccupancyTracker(final OccupancyRegistry occupancyRegistry, final OccupancyProperties properties, final Clock clock) {
         this.occupancyRegistry = occupancyRegistry;
@@ -192,11 +197,28 @@ public class OccupancyTracker {
     /**
      * A gateway heard a packet of a BLU Motion at {@code heardAt} (the {@code last_updated_ts} of its bthomedevice;
      * null when the gateway did not say) - HAS-529. The newest of all gateways counts; a gateway that holds the device
-     * stands for it either way. Not a report: what the sensor said and when it last said it stay.
+     * stands for it either way. Not a report: what the sensor said and when it last said it stay. {@code battery}: the
+     * per cent of the packet (HAS-530), null when the gateway did not say - a level of an older packet than one
+     * taken already changes nothing.
      */
-    public void bluDevice(final OccupancySensor sensor, final Instant heardAt) {
+    public void bluDevice(final OccupancySensor sensor, final Instant heardAt, final Integer battery) {
         deviceHeard(sensor, heardAt);
+        if (battery != null && battery >= 0 && battery <= 100) {
+            if (heardAt == null) {
+                //a level without the time of its packet only while none is known: dated by the service, it would win
+                //over a later packet dated by a gateway whose clock lags
+                batteries.putIfAbsent(sensor.id(), new Battery(battery, LocalDateTime.MIN));
+            } else {
+                batteries.merge(sensor.id(), new Battery(battery, at(heardAt)),
+                    (held, heard) -> heard.heardAt().isBefore(held.heardAt()) ? held : heard);
+            }
+        }
         confirm(sensor);
+    }
+
+    /** The battery of a BLU Motion in per cent (HAS-530); empty while no gateway reported it since the start. */
+    public Optional<Integer> batteryOf(final OccupancySensor sensor) {
+        return Optional.ofNullable(batteries.get(sensor.id())).map(Battery::level);
     }
 
     //every report of a BLU Motion is a packet of its device - a status topic over MQTT as much as a gateway read
@@ -308,7 +330,7 @@ public class OccupancyTracker {
     private RoomOccupancy.SensorView view(final OccupancySensor sensor, final Reading reading, final LocalDateTime now) {
         return new RoomOccupancy.SensorView(sensor.id(), sensor.name(), sensor.kind().value(),
             reading == null ? null : reading.lastReportAt(),
-            reachable(sensor, reading, now));
+            reachable(sensor, reading, now), batteryOf(sensor).orElse(null));
     }
 
     private Boolean reachable(final OccupancySensor sensor, final Reading reading, final LocalDateTime now) {
