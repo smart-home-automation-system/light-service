@@ -36,7 +36,7 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
   `LightServiceApplicationTest`. Tables: `light_state` (`V1`, HAS-259), `light_room_rule` and
   `light_motion_period` (`V2`, HAS-261), `light_rule_run` (`V3`, HAS-262 - its Jira text says `V4`),
   `light_simulation_phase` and `light_simulation_spot` (`V4`, HAS-263), `light_availability_alert` (`V5`,
-  HAS-264). **The next migration is `V6`**.
+  HAS-264), `light_battery_alert` (`V6`, HAS-530). **The next migration is `V7`**.
 - Integrates with hardware: the Eaton lights through `amx-service`, the Shelly lights over HTTP
   (commands) and MQTT (status topics) - from HAS-258 on.
 
@@ -387,6 +387,18 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
     heating-service), so a restart neither repeats an alert nor forgets a return; the table moves only once the
     broker took the message (a failed publish is tried again with the next pass, cut off after 30 s). Rows are
     inserted by `R2dbcEntityTemplate.insert` - the registry id is the key.
+  - **The battery of a BLU Motion** (HAS-530): the `battery` of its `bthomedevice` (per cent, the latest packet of any
+    gateway; a value outside 0-100 is no level) in `OccupancyTracker.batteryOf`, and in the occupancy read as
+    `sensors[].battery`, left out while not known. The pure `BatteryEvaluator` (pinned by `BatteryEvaluatorTest`):
+    below `light.monitor.battery-low-below` (20, validated 5-50) and not warned yet - **one warning** naming every
+    sensor newly below it, **never a reminder** (a battery runs down over weeks); at the threshold or above again -
+    one info (a replaced battery) - only at the threshold plus `BACK_MARGIN` (10 points), so a level wavering at it
+    neither warns nor tells back every swing; **a level not known is never low and never back**; a sensor removed from the
+    registry is forgotten without a word. The warning is `publishReminder` - category `alert`, level `warn`, the
+    technical channel; never the household, never an SMS. Kept in `light_battery_alert` (V6, key the registry id,
+    the level warned at, since when): **a table of its own, not a kind of `light_availability_alert`**, whose key is
+    the device too - a sensor may be silent and low at once. The battery pass runs after the availability in the same
+    bounded pass, each with its own error handling.
   - Proven outside the cluster (2026-10-20): the jar with `home,local` (`env: dev`), a stub registry with one Gen1
     light at a dead address and the broker through a port-forward put exactly one alert into
     `notification.dev.alert`, not repeated by the next passes. **A local run against the real broker needs both

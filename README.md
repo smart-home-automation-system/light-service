@@ -185,7 +185,7 @@ when a light is on, `false` when every light is known to be off, and left out ot
 The occupancy of a room: `room`, `occupied` (`true` / `false`), `since` (when the service saw it
 change), `lastMotionAt`, `motion` (a BLU Motion reports a motion going on, HAS-349), `motionClearedAt` (when the
 newest such motion ended), `illumination` (`dark`, `twilight`, `bright`), `lux`, and `sensors: [{id, name,
-kind, lastReportAt, reachable}]` - **each left out while it is not known**: no rule may act on a room
+kind, lastReportAt, reachable, battery}]` (`battery` - the per cent of a BLU Motion, HAS-530) - **each left out while it is not known**: no rule may act on a room
 that only looks empty.
 
 A room is switched one light after the other; one that fails is named in `failed`, the rest still
@@ -338,6 +338,10 @@ One alert per pass names every device newly out (ten by name, the rest counted),
 the database, so a restart neither repeats an alert nor announces a return it has not seen; a device removed
 from the registry while out is forgotten without a word. Nothing is judged before the registry was read once.
 
+**The battery of a BLU Motion** (HAS-530): below `light.monitor.battery-low-below` (20 %) one warning on the technical
+channel names every sensor newly below it - never a reminder, never the household or an SMS - and one info tells a
+battery back ten points above it (a replaced battery); a level the gateway does not report is never low. Kept in the database as well.
+
 # Database
 
 - **Own database** `home-automation-light` on the managed PostgreSQL, reactive access via
@@ -354,3 +358,5 @@ from the registry while out is forgotten without a word. Nothing is judged befor
   simulation - one row per phase, its spots in the order written, gone with it.
 - `light_availability_alert` (`V5`, HAS-264): the open alerts of the availability monitor - one row per
   device the household was told is out and not yet told is back.
+- `light_battery_alert` (`V6`, HAS-530): the BLU Motions warned about for a low battery and not yet seen back
+  above the threshold.

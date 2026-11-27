@@ -146,16 +146,19 @@ public class OccupancyReads {
         components.keySet().removeIf(key -> key.gateway().equals(gateway.deviceId()) && !found.containsKey(key));
         components.putAll(found);
 
-        //HAS-529: the device of a BLU Motion - its last packet, motion or not, is what the availability monitor judges
+        //HAS-529: the device of a BLU Motion - its last packet, motion or not, is what the availability monitor judges;
+        //HAS-530: and its battery
         list.stream()
             .filter(component -> component.getKey() != null && component.getKey().startsWith(DEVICE))
             .forEach(component -> as(component.getConfig(), BthomeDeviceConfig.class)
                 .map(BthomeDeviceConfig::getAddr)
                 .map(address -> byAddress.get(address.toLowerCase(Locale.ROOT)))
-                .ifPresent(sensor -> occupancyTracker.bluDevice(sensor, as(component.getStatus(), BthomeDeviceStatus.class)
-                    .map(BthomeDeviceStatus::getLastUpdatedTs)
-                    .map(Instant::ofEpochSecond)
-                    .orElse(null))));
+                .ifPresent(sensor -> {
+                    final Optional<BthomeDeviceStatus> status = as(component.getStatus(), BthomeDeviceStatus.class);
+                    occupancyTracker.bluDevice(sensor,
+                        status.map(BthomeDeviceStatus::getLastUpdatedTs).map(Instant::ofEpochSecond).orElse(null),
+                        status.map(BthomeDeviceStatus::getBattery).orElse(null));
+                }));
     }
 
     /**

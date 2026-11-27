@@ -20,7 +20,7 @@ class AvailabilityEvaluatorTest {
 
     private static final LocalDateTime NOW = LocalDateTime.of(2026, 10, 20, 12, 0);
     private static final MonitorProperties PROPERTIES = new MonitorProperties(Duration.ofMinutes(5), Duration.ofHours(1),
-        Duration.ofMinutes(30), Duration.ofHours(24), Duration.ofHours(24));
+        Duration.ofMinutes(30), Duration.ofHours(24), Duration.ofHours(24), 20);
 
     @Test
     void should_alert_a_light_unreachable_for_five_minutes() {

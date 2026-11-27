@@ -1,5 +1,7 @@
 package cloud.cholewa.light.config;
 
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 import org.hibernate.validator.constraints.time.DurationMax;
 import org.hibernate.validator.constraints.time.DurationMin;
@@ -21,6 +23,7 @@ import java.time.temporal.ChronoUnit;
  *                            it sends without a motion too (HAS-529), not by its last motion
  * @param batteryReminderEvery how often the silence of a BLU Motion that goes on is repeated - a battery or a range
  *                            is nothing to hear of every hour (HAS-529)
+ * @param batteryLowBelow     the per cent of a BLU Motion below which the technical channel is warned once (HAS-530)
  */
 @Validated
 @ConfigurationProperties(prefix = "light.monitor")
@@ -34,6 +37,8 @@ public record MonitorProperties(
     @NotNull @DurationMin(hours = 1) @DurationMax(days = 7) @DurationUnit(ChronoUnit.MINUTES)
     Duration batterySilentAfter,
     @NotNull @DurationMin(hours = 1) @DurationMax(days = 7) @DurationUnit(ChronoUnit.MINUTES)
-    Duration batteryReminderEvery
+    Duration batteryReminderEvery,
+    @NotNull @Min(5) @Max(50)
+    Integer batteryLowBelow
 ) {
 }
