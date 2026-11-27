@@ -12,11 +12,14 @@ import java.util.stream.Collectors;
 
 //What the battery watch makes of the BLU Motions and the warnings already given (HAS-530): pure, pinned by
 //BatteryEvaluatorTest.
-//- a level below lowBelow and not warned about: a warning - once, never a reminder (a battery runs down over weeks);
-//- warned about and its level known at lowBelow + BACK_MARGIN or above: back - a replaced battery, an info. The margin
-//  keeps a level wavering at the threshold (19 % at night, 20 % by day) from a warning and an info every swing;
-//- a level not known is never low and never back: after a start, or a gateway that does not say, nothing is decided;
-//- warned about and no longer watched (removed from the registry): forgotten without a word.
+//- A level below the threshold, not warned about yet, is a warning - once, never a reminder, as a battery runs down
+//  over weeks.
+//- A sensor warned about is back once its level is ten points above the threshold or more - a replaced battery, an
+//  info. The margin keeps a level wavering at the threshold, say 19 at night and 20 by day, from a warning and an info
+//  every swing.
+//- A level not known is never low and never back: after a start, or from a gateway that does not say, nothing is
+//  decided.
+//- A sensor warned about and no longer watched, removed from the registry, is forgotten without a word.
 @NoArgsConstructor(access = AccessLevel.PRIVATE)
 public final class BatteryEvaluator {
 
