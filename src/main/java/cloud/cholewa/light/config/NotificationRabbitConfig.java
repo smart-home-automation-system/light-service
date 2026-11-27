@@ -3,7 +3,8 @@ package cloud.cholewa.light.config;
 import cloud.cholewa.commons.notification.NotificationConnection;
 import cloud.cholewa.commons.notification.NotificationPublisher;
 import org.springframework.amqp.rabbit.connection.ConnectionNameStrategy;
-import org.springframework.boot.amqp.autoconfigure.RabbitProperties;
+import org.springframework.boot.rabbitmq.autoconfigure.RabbitConnectionDetails;
+import org.springframework.boot.rabbitmq.autoconfigure.RabbitProperties;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -24,18 +25,22 @@ public class NotificationRabbitConfig {
     //the same broker as spring.rabbitmq.*, with its connection timeout and heartbeat. Nothing is
     //opened here - the connection is made by the first publish. The strategy is the one that names
     //the connection of the listener; this one gets the same name with "/notification" added.
-    //Closed with the context: Spring finds close() of an AutoCloseable bean by itself
+    //Closed with the context: Spring finds close() of an AutoCloseable bean by itself.
+    //The host and port as Boot resolved them (RabbitConnectionDetails - determineHost / determinePort of
+    //RabbitProperties are deprecated for removal since Boot 4.2.0).
     @Bean
     NotificationConnection notificationConnection(
         final RabbitProperties rabbitProperties,
+        final RabbitConnectionDetails connectionDetails,
         final NotificationConnectionProperties properties,
         final ConnectionNameStrategy connectionNameStrategy,
         final ApplicationContext applicationContext
     ) {
+        final RabbitConnectionDetails.Address broker = connectionDetails.getFirstAddress();
         return NotificationConnection.create(
             new NotificationConnection.Settings(
-                rabbitProperties.determineHost(),
-                rabbitProperties.determinePort(),
+                broker.host(),
+                broker.port(),
                 properties.virtualHost(),
                 properties.username(),
                 properties.password(),

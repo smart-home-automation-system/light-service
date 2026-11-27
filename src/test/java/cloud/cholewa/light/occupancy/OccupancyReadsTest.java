@@ -66,6 +66,30 @@ class OccupancyReadsTest {
         verify(tracker).bluLux(OFFICE_PIR, 12.0, Instant.ofEpochSecond(1792405079));
     }
 
+    //HAS-529: the device of a BLU Motion of the registry by its address in any case - when the gateway last heard any
+    //packet of it; the device of another sensor is not this service's, one without a status still has its gateway
+    @Test
+    void should_take_when_the_gateway_last_heard_the_device_of_a_blu_motion() {
+        when(rpc.dynamicComponents("10.0.0.45")).thenReturn(Mono.just(List.of(
+            device(200, "B0:C7:DE:C5:F5:D5", Map.of("id", 200, "battery", 100, "last_updated_ts", 1792405079)),
+            device(201, "60:ef:ab:43:ec:78", Map.of("id", 201, "last_updated_ts", 1792405000)))));
+
+        reads.read().as(StepVerifier::create).verifyComplete();
+
+        verify(tracker).bluDevice(OFFICE_PIR, Instant.ofEpochSecond(1792405079));
+        verify(tracker, times(1)).bluDevice(any(), any());
+    }
+
+    @Test
+    void should_confirm_a_blu_device_that_holds_no_time_yet() {
+        when(rpc.dynamicComponents("10.0.0.45")).thenReturn(Mono.just(List.of(
+            device(200, "b0:c7:de:c5:f5:d5", Map.of()))));
+
+        reads.read().as(StepVerifier::create).verifyComplete();
+
+        verify(tracker).bluDevice(OFFICE_PIR, null);
+    }
+
     //a component without a status - the gateway stands for the sensor all the same
     @Test
     void should_confirm_a_sensor_whose_component_holds_nothing_yet() {
@@ -127,6 +151,10 @@ class OccupancyReadsTest {
 
     private static ShellyComponent component(final String key, final Map<String, Object> status, final Map<String, Object> config) {
         return ShellyComponent.builder().key(key).status(new HashMap<>(status)).config(new HashMap<>(config)).build();
+    }
+
+    private static ShellyComponent device(final int id, final String address, final Map<String, Object> status) {
+        return component("bthomedevice:" + id, status, Map.of("id", id, "addr", address, "name", "BLU Motion"));
     }
 
     private static ShellyComponent sensor(final int id, final String address, final int object, final Map<String, Object> status) {

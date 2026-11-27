@@ -14,6 +14,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -41,6 +42,9 @@ public class OccupancyTracker {
 
     private final Map<Long, Reading> readings = new ConcurrentHashMap<>();
     private final Map<RoomName, Since> rooms = new ConcurrentHashMap<>();
+    //HAS-529: when a gateway last heard any packet of a BLU Motion (its bthomedevice) - sent without a motion too,
+    //so a sensor in an unused dark room is still heard; the newest of all gateways
+    private final Map<Long, LocalDateTime> devicesHeardAt = new ConcurrentHashMap<>();
 
     public OccupancyTracker(final OccupancyRegistry occupancyRegistry, final OccupancyProperties properties, final Clock clock) {
         this.occupancyRegistry = occupancyRegistry;
@@ -150,6 +154,7 @@ public class OccupancyTracker {
      * @return whether a motion was taken - for the rules of the room (HAS-262), which judge how fresh it is
      */
     public boolean bluMotion(final OccupancySensor sensor, final Boolean motion, final Instant heardAt) {
+        deviceHeard(sensor, heardAt);
         final LocalDateTime now = now();
         final AtomicBoolean taken = new AtomicBoolean();
         readings.compute(sensor.id(), (id, held) -> {
@@ -170,6 +175,7 @@ public class OccupancyTracker {
 
     /** The illuminance a gateway heard of a BLU Motion, by the same rule of the later report. */
     public void bluLux(final OccupancySensor sensor, final Double lux, final Instant heardAt) {
+        deviceHeard(sensor, heardAt);
         final LocalDateTime now = now();
         readings.compute(sensor.id(), (id, held) -> {
             final Reading old = held == null ? Reading.NONE : held;
@@ -181,6 +187,36 @@ public class OccupancyTracker {
                 lux, heardAt == null ? now : at(heardAt), old.lastMotionAt(), old.motionHeardAt(),
                 heardAt == null ? old.luxHeardAt() : heardAt, now, now, old.motionNow(), old.motionClearedAt());
         });
+    }
+
+    /**
+     * A gateway heard a packet of a BLU Motion at {@code heardAt} (the {@code last_updated_ts} of its bthomedevice;
+     * null when the gateway did not say) - HAS-529. The newest of all gateways counts; a gateway that holds the device
+     * stands for it either way. Not a report: what the sensor said and when it last said it stay.
+     */
+    public void bluDevice(final OccupancySensor sensor, final Instant heardAt) {
+        deviceHeard(sensor, heardAt);
+        confirm(sensor);
+    }
+
+    //every report of a BLU Motion is a packet of its device - a status topic over MQTT as much as a gateway read
+    private void deviceHeard(final OccupancySensor sensor, final Instant heardAt) {
+        if (heardAt != null) {
+            devicesHeardAt.merge(sensor.id(), at(heardAt), (held, heard) -> heard.isAfter(held) ? heard : held);
+        }
+    }
+
+    /**
+     * When a sensor was last heard; empty while it was not heard since the start. A BLU Motion by the last packet a
+     * gateway heard of its device (HAS-529) - every packet, a motion included, moves it, and it is the time of the
+     * gateway, where the time of a report is when the service took it (a motion of two days ago read after a start
+     * would look fresh). Any other sensor by its last report.
+     */
+    public Optional<LocalDateTime> lastHeardAt(final OccupancySensor sensor) {
+        if (sensor.binding() instanceof SensorBinding.BluMotion) {
+            return Optional.ofNullable(devicesHeardAt.get(sensor.id()));
+        }
+        return Optional.ofNullable(readings.get(sensor.id())).map(Reading::lastReportAt);
     }
 
     /** A gateway answered and stands for a BLU sensor it holds, without a report of its own. */

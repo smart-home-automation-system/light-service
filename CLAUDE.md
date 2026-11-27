@@ -25,9 +25,10 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
   `database-service` (device registry), `amx-service` (the Eaton lights) and `presence-service`
   (who is at home) over k8s DNS (`internal.service.*`). Everything is routed by `api-gateway-service`
   >= 0.8.0 (`/light`, `/light/**`, every method, HAS-265); the dashboard will branch on the codes.
-- Uses libraries: `cholewa-commons` 1.14.0 (pool, error contract, `DownstreamErrors`, connection
+- Uses libraries (Spring Boot 4.2.0 since HAS-529 - `spring-boot-starter-rabbitmq`, the broker of the second
+  connection from `RabbitConnectionDetails`): `cholewa-commons` 2.0.0 (pool, error contract, `DownstreamErrors`, connection
   names, `NotificationPublisher`, `cholewa.required-properties`, Logbook in the reactive chain, the
-  scheduler pool and `ScheduledPass`), `smart-home-sdk` 1.24.0
+  scheduler pool and `ScheduledPass`), `smart-home-sdk` 1.26.0
   (`SmartDevice` and `LightKind` of the registry; a zone as the channel of a presence sensor), `shelly-client` 2.7.0 (`ShellyGen1Client`,
   `ShellyRpcClient`; their calls reach Logbook through the injected builder, HAS-302).
 - Database: own database `home-automation-light`, pool `database.pool.max-size: 2` (2 of the
@@ -199,7 +200,8 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
   `ConnectionFactory` or `RabbitOperations` bean would make `RabbitAutoConfiguration` back off,
   and the listener would lose manual ack, prefetch and observation. **The fourth copy** of the
   class (heating, blinds, weather, light) - kept by the owner's choice in HAS-257 instead of a
-  move into `cholewa-commons`; a change goes into every copy.
+  move into `cholewa-commons`; a change goes into every copy - except the move to `RabbitConnectionDetails` of Boot
+  4.2.0 (HAS-529 here), which each copy takes with the Boot 4.2 task of its own service.
 - **Timeouts of the clients**: `internal.service.<name>.{connect,response}-timeout`, a bare
   number is seconds, bounded 1–60 s (`InternalServicePropertiesTest`); `amx` answers within
   10 s (it may read the registry and wait for the frame server first). Each client has its own
@@ -358,13 +360,25 @@ Claude implements its tasks here ("zajmij się HAS-n"), as in blinds-service and
   - **Shelly lights** are out after `light.monitor.offline-after` (PT5M) of `reachable: false` in `LightStateTracker`
     (Gen1: failed polls of `/status`; Gen2: the MQTT last will); a reachability not known (after a start) is not
     judged, the time it went unreachable is in memory. **Eaton lights are not watched.**
-  - **Sensors** by silence of their reports in `OccupancyTracker`: a presence sensor after `sensor-silent-after`
-    (PT30M), a battery motion sensor (BLU Motion, Shelly Motion) after `battery-silent-after` (PT24H); one never
-    heard since the start counts from the start. **The PIRs of the AMX system are not watched** (they report only
-    after dark). The circulation sensor of bathroom up (100) reports rarely by its settings - the first candidate
-    should a silence alert turn out false.
+  - **Sensors** by silence (`OccupancyTracker.lastHeardAt`): a presence sensor by its last report after
+    `sensor-silent-after` (PT30M); **a BLU Motion by the last packet a gateway heard of its device** (HAS-529) after
+    `battery-silent-after` (PT24H) - the `last_updated_ts` of its `bthomedevice`, read with the gateway every five
+    minutes (`OccupancyReads`), and of every status topic of its motion and lux, the newest of all. Every packet moves it, a motion or not: a BLU Motion
+    sends packets without a motion too (sampled 2026-11-27, SBMO-003Z fw v1.0.23: every one of the eight sent one;
+    in a room in use a packet every few to some tens of minutes, in the unused sanctum 102 none for more than 2 h after
+    one at 20:09 - its whole interval is checked against the 24 h of the threshold after the deploy), while its `bthomesensor` components (motion, lux) change only
+    with their value - sensor 102 of the unused sanctum had a device packet an hour old and a motion of 46 h
+    (2026-11-27), alerted every hour until HAS-529. Never by the time a report was taken - after a start an old
+    motion would look fresh. One never heard since the start counts from the start. Its reminder is
+    `battery-reminder-every` (PT24H): a battery or a range, nothing to hear of every hour.
+    **Not watched**: the PIRs of the AMX system (they report only after dark) and **the Shelly Motion Gen1**
+    (103, 129, 130 - HAS-529): it reports to the service only by its actions, on a motion and its end, so a room
+    nobody enters for days is silence, not an outage (owner, 2026-11-27); its open alert is closed without a word as
+    no longer watched. (It is on Wi-Fi all the time - 103 answered `/status` with 100 days of uptime - so a poll
+    could watch it; not wanted.) Judging a sensor by another sensor of the room was rejected (the two sensors of
+    sanctum cover different parts of it).
   - **One message per pass and kind** - one alert naming every device newly out, one reminder (`reminder-every`,
-    PT1H), one info for the returns - so a Wi-Fi outage is one message. A device removed from the registry while out
+    PT1H, a BLU Motion `battery-reminder-every`), one info for the returns - so a Wi-Fi outage is one message. A device removed from the registry while out
     is forgotten without a word.
   - **A return is a light reachable now, a sensor heard since the start** (HAS-296): after a restart the outage of a
     light counts anew, and for `offline-after` a light still unreachable is neither out nor back - its alert stays

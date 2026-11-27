@@ -2,6 +2,8 @@ package cloud.cholewa.light.occupancy;
 
 import cloud.cholewa.light.occupancy.OccupancyRegistry.Gateway;
 import cloud.cholewa.shelly.http.ShellyRpcClient;
+import cloud.cholewa.shelly.model.BthomeDeviceConfig;
+import cloud.cholewa.shelly.model.BthomeDeviceStatus;
 import cloud.cholewa.shelly.model.BthomeSensorConfig;
 import cloud.cholewa.shelly.model.BthomeSensorStatus;
 import cloud.cholewa.shelly.model.IlluminanceStatus;
@@ -30,7 +32,7 @@ import java.util.stream.Collectors;
 //- every BTHome gateway of the registry, Shelly.GetComponents: which bthomesensor component of it is the
 //  motion (object 0x21) or the illuminance (0x05) of which BLU Motion of the registry - the map the status
 //  topics are routed by between two reads (the way blinds-service maps its window sensors) - and what
-//  each holds now
+//  each holds now; and the bthomedevice of each BLU Motion: when the gateway last heard any packet of it (HAS-529)
 //- every Presence: its zone (a dynamic component, not in Shelly.GetStatus) and its illuminance:0 - a
 //  reconciliation of what MQTT publishes on a change; it never says whether the device is reachable.
 //A device that does not answer is a WARN when it starts failing and an INFO when it is back; its sensors
@@ -43,6 +45,7 @@ public class OccupancyReads {
     static final int MOTION_OBJECT = 0x21;
     static final int ILLUMINANCE_OBJECT = 0x05;
     private static final String SENSOR = "bthomesensor:";
+    private static final String DEVICE = "bthomedevice:";
     private static final String ZONE = "presencezone:";
     private static final String ILLUMINANCE = "illuminance:0";
 
@@ -142,6 +145,17 @@ public class OccupancyReads {
 
         components.keySet().removeIf(key -> key.gateway().equals(gateway.deviceId()) && !found.containsKey(key));
         components.putAll(found);
+
+        //HAS-529: the device of a BLU Motion - its last packet, motion or not, is what the availability monitor judges
+        list.stream()
+            .filter(component -> component.getKey() != null && component.getKey().startsWith(DEVICE))
+            .forEach(component -> as(component.getConfig(), BthomeDeviceConfig.class)
+                .map(BthomeDeviceConfig::getAddr)
+                .map(address -> byAddress.get(address.toLowerCase(Locale.ROOT)))
+                .ifPresent(sensor -> occupancyTracker.bluDevice(sensor, as(component.getStatus(), BthomeDeviceStatus.class)
+                    .map(BthomeDeviceStatus::getLastUpdatedTs)
+                    .map(Instant::ofEpochSecond)
+                    .orElse(null))));
     }
 
     /**

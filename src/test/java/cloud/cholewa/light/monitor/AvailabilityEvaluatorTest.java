@@ -20,7 +20,7 @@ class AvailabilityEvaluatorTest {
 
     private static final LocalDateTime NOW = LocalDateTime.of(2026, 10, 20, 12, 0);
     private static final MonitorProperties PROPERTIES = new MonitorProperties(Duration.ofMinutes(5), Duration.ofHours(1),
-        Duration.ofMinutes(30), Duration.ofHours(24));
+        Duration.ofMinutes(30), Duration.ofHours(24), Duration.ofHours(24));
 
     @Test
     void should_alert_a_light_unreachable_for_five_minutes() {
@@ -56,6 +56,25 @@ class AvailabilityEvaluatorTest {
 
         assertThat(decide(List.of(light), Map.of(110L, recent)).nothing()).isTrue();
         assertThat(decide(List.of(light), Map.of(110L, hourAgo)).reminders()).containsExactly(hourAgo);
+    }
+
+    //HAS-529: a BLU Motion silent for good is a battery or a range - told once a day, not every hour
+    @Test
+    void should_remind_a_silent_motion_sensor_once_a_day() {
+        final Watched motion = new Watched(102, "Motion", "sanctum", Kind.BATTERY_SENSOR, NOW.minusHours(30), true);
+        final Alert hourAgo = new Alert(102, Kind.BATTERY_SENSOR, "Motion", "sanctum", NOW.minusHours(30), NOW.minusHours(1));
+        final Alert dayAgo = new Alert(102, Kind.BATTERY_SENSOR, "Motion", "sanctum", NOW.minusHours(30), NOW.minusHours(24));
+
+        assertThat(decide(List.of(motion), Map.of(102L, hourAgo)).nothing()).isTrue();
+        assertThat(decide(List.of(motion), Map.of(102L, dayAgo)).reminders()).containsExactly(dayAgo);
+    }
+
+    //HAS-529: the last packet of the device is when it was heard - a motion two days old says nothing of the sensor
+    @Test
+    void should_not_alert_a_motion_sensor_whose_device_was_heard_within_the_limit() {
+        final Watched heardByItsPacket = new Watched(102, "Motion", "sanctum", Kind.BATTERY_SENSOR, NOW.minusHours(2), true);
+
+        assertThat(decide(List.of(heardByItsPacket), Map.of()).nothing()).isTrue();
     }
 
     @Test
