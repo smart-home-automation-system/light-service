@@ -11,7 +11,7 @@
 
 ![GitHub top language](https://img.shields.io/github/languages/top/smart-home-automation-system/light-service?style=plastic)
 ![Java](https://img.shields.io/badge/java-21-yellow?style=plastic)
-![SpringBoot](https://img.shields.io/badge/SpringBoot-4.1.3-blue?style=plastic)
+![SpringBoot](https://img.shields.io/badge/SpringBoot-4.2.0-blue?style=plastic)
 [![Coverage](https://sonarcloud.io/api/project_badges/measure?project=smart-home-automation-system_light-service&metric=coverage)](https://sonarcloud.io/summary/new_code?id=smart-home-automation-system_light-service)
 [![Lines of Code](https://sonarcloud.io/api/project_badges/measure?project=smart-home-automation-system_light-service&metric=ncloc)](https://sonarcloud.io/summary/new_code?id=smart-home-automation-system_light-service)
 
@@ -330,10 +330,11 @@ Every minute the service checks what it depends on and tells the household on Di
 |---|---|---|
 | Shelly lights | unreachable for `light.monitor.offline-after` (5 min) - a Gen1 light by failed polls of `/status`, a Gen2+ light by its MQTT last will, or a failed reconciliation while MQTT said nothing since the start | Eaton lights |
 | presence sensors | silent for `light.monitor.sensor-silent-after` (30 min) | |
-| battery motion sensors (BLU Motion, Shelly Motion) | silent for `light.monitor.battery-silent-after` (24 h) - they send only when they sense something | the PIRs of the AMX system (they report only after dark) |
+| BLU Motion sensors | no gateway heard a packet of the device for `light.monitor.battery-silent-after` (24 h) - a BLU Motion sends packets without a motion too, so a room nobody enters is no outage (HAS-529) | the PIRs of the AMX system (they report only after dark), the Shelly Motion Gen1 (it reports only a motion and its end) |
 
 One alert per pass names every device newly out (ten by name, the rest counted), a reminder follows every
-`light.monitor.reminder-every` (1 h) while it lasts, and one info when it is back. The open alerts are kept in
+`light.monitor.reminder-every` (1 h) while it lasts - for a BLU Motion every `light.monitor.battery-reminder-every`
+(24 h) -, and one info when it is back. The open alerts are kept in
 the database, so a restart neither repeats an alert nor announces a return it has not seen; a device removed
 from the registry while out is forgotten without a word. Nothing is judged before the registry was read once.
 
