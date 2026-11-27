@@ -11,7 +11,6 @@ import cloud.cholewa.light.database.repository.AvailabilityAlertRepository;
 import cloud.cholewa.light.model.Light;
 import cloud.cholewa.light.model.LightBinding;
 import cloud.cholewa.light.model.LightStatus;
-import cloud.cholewa.light.model.RoomOccupancy;
 import cloud.cholewa.light.occupancy.OccupancyRegistry;
 import cloud.cholewa.light.occupancy.OccupancySensor;
 import cloud.cholewa.light.occupancy.OccupancyTracker;
@@ -32,6 +31,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.IntStream;
 
@@ -59,6 +59,10 @@ class AvailabilityMonitorTest {
         new LightBinding.Eaton(21, EatonGatewayType.LIGHTS), LightKind.DIMMER);
     private static final OccupancySensor PRESENCE = new OccupancySensor(92, "Presence", RoomName.LIVIA, SensorKind.PRESENCE,
         new SensorBinding.Presence("10.0.0.62", "shellypresence-62", 200));
+    private static final OccupancySensor BLU = new OccupancySensor(102, "Motion sensor", RoomName.SANCTUM, SensorKind.MOTION,
+        new SensorBinding.BluMotion("0c:ae:5f:5a:62:7e"));
+    private static final OccupancySensor SHELLY_MOTION = new OccupancySensor(103, "Shelly Motion", RoomName.SANCTUM,
+        SensorKind.MOTION, new SensorBinding.Gen1Motion("10.0.0.209"));
     private static final OccupancySensor PIR = new OccupancySensor(51, "PIR", RoomName.STAIRS, SensorKind.MOTION,
         new SensorBinding.EatonMotion(EatonGatewayType.LIGHTS, 92));
 
@@ -93,13 +97,13 @@ class AvailabilityMonitorTest {
     void setUp() {
         monitor = new AvailabilityMonitor(lightRegistry, lightStateTracker, occupancyRegistry, occupancyTracker, alertRepository,
             entityTemplate, notificationPublisher, new MonitorProperties(Duration.ofMinutes(5), Duration.ofHours(1),
-            Duration.ofMinutes(30), Duration.ofHours(24)), clock);
+            Duration.ofMinutes(30), Duration.ofHours(24), Duration.ofHours(24)), clock);
         when(lightRegistry.loaded()).thenReturn(true);
         when(occupancyRegistry.loaded()).thenReturn(true);
         when(lightRegistry.current()).thenReturn(List.of(TOBI_MAIN, LIVIA_DESK, STAIRS));
         when(lightStateTracker.status(any(Light.class))).thenReturn(Mono.just(reachable(true)));
         when(occupancyRegistry.sensors()).thenReturn(List.of(PRESENCE, PIR));
-        when(occupancyTracker.room(RoomName.LIVIA)).thenAnswer(invocation -> occupancy(now.get()));
+        when(occupancyTracker.lastHeardAt(PRESENCE)).thenAnswer(invocation -> Optional.of(now.get()));
         when(alertRepository.findAll()).thenReturn(Flux.empty());
         when(entityTemplate.insert(any(AvailabilityAlertEntity.class))).thenAnswer(invocation -> Mono.just(invocation.getArgument(0)));
         when(alertRepository.deleteById(anyLong())).thenReturn(Mono.empty());
@@ -198,14 +202,55 @@ class AvailabilityMonitorTest {
     //a sensor never heard since the start counts from the start; the PIR of the AMX system is not watched
     @Test
     void should_count_a_sensor_never_heard_from_the_start() {
-        when(occupancyTracker.room(RoomName.LIVIA)).thenReturn(occupancy(null));
+        when(occupancyTracker.lastHeardAt(PRESENCE)).thenReturn(Optional.empty());
         now.set(START.plusMinutes(30));
 
         check();
 
         verify(notificationPublisher).publishAlert(
             "Not available: the presence sensor Presence (livia, 92) is silent since 2026-10-20 12:00 (30 min).");
-        verify(occupancyTracker, never()).room(RoomName.STAIRS);
+        verify(occupancyTracker, never()).lastHeardAt(PIR);
+    }
+
+    //HAS-529: a BLU Motion is heard by any packet of its device - two days without a motion in a dark room is no outage
+    @Test
+    void should_judge_a_blu_motion_by_the_last_packet_of_its_device() {
+        when(occupancyRegistry.sensors()).thenReturn(List.of(PRESENCE, BLU));
+        when(occupancyTracker.lastHeardAt(BLU)).thenReturn(Optional.of(START.minusHours(2)));
+        now.set(START.plusMinutes(10));
+
+        check();
+
+        verify(notificationPublisher, never()).publishAlert(anyString());
+    }
+
+    //HAS-529: no gateway heard it for a day - one alert
+    @Test
+    void should_alert_a_blu_motion_no_gateway_heard_for_a_day() {
+        when(occupancyRegistry.sensors()).thenReturn(List.of(PRESENCE, BLU));
+        when(occupancyTracker.lastHeardAt(BLU)).thenReturn(Optional.of(START.minusHours(24)));
+
+        check();
+
+        verify(notificationPublisher).publishAlert(
+            "Not available: the motion sensor Motion sensor (sanctum, 102) is silent since 2026-10-19 12:00 (24 h 0 min).");
+    }
+
+    //HAS-529: a Shelly Motion Gen1 sleeps on Wi-Fi with no heartbeat - not watched, its open alert closed without a word
+    @Test
+    void should_not_watch_a_shelly_motion_and_close_its_alert_without_a_word() {
+        when(occupancyRegistry.sensors()).thenReturn(List.of(PRESENCE, SHELLY_MOTION));
+        when(alertRepository.findAll()).thenReturn(Flux.just(new AvailabilityAlertEntity(103L, "battery sensor", "Shelly Motion",
+            "sanctum", START.minusHours(30), START.minusHours(1))));
+        now.set(START.plusDays(2));
+
+        check();
+
+        verify(occupancyTracker, never()).lastHeardAt(SHELLY_MOTION);
+        verify(alertRepository).deleteById(103L);
+        verify(notificationPublisher, never()).publishAlert(anyString());
+        verify(notificationPublisher, never()).publishInfo(anyString());
+        verify(notificationPublisher, never()).publishReminder(anyString());
     }
 
     //a start while database-service is away: nothing is judged, no alert forgotten
@@ -257,11 +302,6 @@ class AvailabilityMonitorTest {
 
     private void check() {
         monitor.check().as(StepVerifier::create).verifyComplete();
-    }
-
-    private static RoomOccupancy occupancy(final LocalDateTime lastReportAt) {
-        return new RoomOccupancy("livia", false, START, null, null, null,
-            List.of(new RoomOccupancy.SensorView(92, "Presence", "presence sensor", lastReportAt, true)));
     }
 
     private static LightStatus reachable(final boolean reachable) {

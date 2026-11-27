@@ -15,9 +15,11 @@ import java.util.stream.Collectors;
 //What the availability monitor makes of the devices it watches and the alerts already open (HAS-264): pure,
 //pinned by AvailabilityEvaluatorTest.
 //- a Shelly light is out once it has been unreachable for offlineAfter, since it became unreachable;
-//- a presence sensor is out once it has been silent for sensorSilentAfter, a battery sensor for
-//  batterySilentAfter, since it was last heard;
-//- out and not announced: an alert; announced and still out: a reminder every reminderEvery; announced and
+//- a presence sensor is out once it has been silent for sensorSilentAfter, a BLU Motion once no gateway heard a
+//  packet of it for batterySilentAfter (HAS-529: the packet of the device, sent without a motion too), since it was
+//  last heard;
+//- out and not announced: an alert; announced and still out: a reminder every reminderEvery, a BLU Motion every
+//  batteryReminderEvery; announced and
 //  back - a light reachable now, a sensor heard since the start; never one only not known, or not yet out again,
 //  after a restart: an info; announced and no longer watched (removed from the registry): forgotten without a word.
 @NoArgsConstructor(access = AccessLevel.PRIVATE)
@@ -72,7 +74,7 @@ public final class AvailabilityEvaluator {
             final Alert alert = open.get(device.id());
             if (out && alert == null) {
                 alerts.add(new Alert(device.id(), device.kind(), device.name(), device.room(), device.since(), now));
-            } else if (out && !alert.lastAlertAt().plus(properties.reminderEvery()).isAfter(now)) {
+            } else if (out && !alert.lastAlertAt().plus(reminderEvery(device.kind(), properties)).isAfter(now)) {
                 reminders.add(alert);
             } else if (!out && alert != null && back(device)) {
                 returns.add(alert);
@@ -89,6 +91,12 @@ public final class AvailabilityEvaluator {
     //null, and a report is the return
     private static boolean back(final Watched device) {
         return device.known() && (device.kind() != Kind.LIGHT || device.since() == null);
+    }
+
+    //HAS-529: a BLU Motion out of range or with an empty battery is told once a day, a light or a presence sensor
+    //every hour
+    private static Duration reminderEvery(final Kind kind, final MonitorProperties properties) {
+        return kind == Kind.BATTERY_SENSOR ? properties.batteryReminderEvery() : properties.reminderEvery();
     }
 
     private static boolean out(final Watched device, final LocalDateTime now, final MonitorProperties properties) {

@@ -155,6 +155,46 @@ class OccupancyTrackerTest {
         assertThat(office.sensors().get(2).reachable()).isTrue();
     }
 
+    //HAS-529: a BLU Motion is heard by any packet of its device, the newest of all gateways - a motion two days old
+    //says nothing of the sensor; a device packet is no report of the room
+    @Test
+    void should_hear_a_blu_motion_by_the_newest_packet_of_its_device() {
+        assertThat(tracker.lastHeardAt(OFFICE_PIR)).isEmpty();
+
+        tracker.bluMotion(OFFICE_PIR, true, START.minusSeconds(2 * 86_400));
+        tracker.bluDevice(OFFICE_PIR, START.minusSeconds(7_200));
+        tracker.bluDevice(OFFICE_PIR, START.minusSeconds(9_000));
+
+        assertThat(tracker.lastHeardAt(OFFICE_PIR)).contains(EVENING.minusSeconds(7_200));
+        final RoomOccupancy office = tracker.room(RoomName.OFFICE);
+        assertThat(office.lastMotionAt()).isEqualTo(EVENING.minusSeconds(2 * 86_400));
+        assertThat(office.sensors().get(2).reachable()).isTrue();
+    }
+
+    //HAS-529: a BLU Motion by the time of its gateway, never by the time the service took a report - after a start a
+    //motion of two days ago stays two days old; a device without a time only confirms. A presence sensor by its report
+    @Test
+    void should_date_a_blu_motion_by_its_gateway_and_a_presence_by_its_report() {
+        tracker.bluMotion(OFFICE_PIR, true, START.minusSeconds(2 * 86_400));
+        tracker.bluDevice(OFFICE_PIR, null);
+        assertThat(tracker.lastHeardAt(OFFICE_PIR)).contains(EVENING.minusSeconds(2 * 86_400));
+
+        tracker.bluMotion(OFFICE_PIR, true, null);
+        assertThat(tracker.lastHeardAt(OFFICE_PIR)).contains(EVENING.minusSeconds(2 * 86_400));
+
+        tracker.presence(DESK, true, true);
+        assertThat(tracker.lastHeardAt(DESK)).contains(EVENING);
+    }
+
+    //a status topic of a BLU Motion over MQTT is a packet of its device too, dated by its gateway
+    @Test
+    void should_hear_a_blu_motion_by_its_published_reports() {
+        tracker.bluLux(OFFICE_PIR, 4.0, START.minusSeconds(300));
+        tracker.bluMotion(OFFICE_PIR, false, START.minusSeconds(120));
+
+        assertThat(tracker.lastHeardAt(OFFICE_PIR)).contains(EVENING.minusSeconds(120));
+    }
+
     //a read of the gateway may bring an older state than a publish a moment before it
     @Test
     void should_keep_the_newer_report_of_a_blu_sensor() {

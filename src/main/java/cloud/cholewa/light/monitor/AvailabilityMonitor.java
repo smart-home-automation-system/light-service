@@ -2,19 +2,16 @@ package cloud.cholewa.light.monitor;
 
 import cloud.cholewa.commons.notification.NotificationPublisher;
 import cloud.cholewa.commons.scheduling.ScheduledPass;
-import cloud.cholewa.home.model.RoomName;
 import cloud.cholewa.light.config.MonitorProperties;
 import cloud.cholewa.light.database.model.AvailabilityAlertEntity;
 import cloud.cholewa.light.database.repository.AvailabilityAlertRepository;
 import cloud.cholewa.light.model.Light;
 import cloud.cholewa.light.model.LightBinding;
-import cloud.cholewa.light.model.RoomOccupancy;
 import cloud.cholewa.light.monitor.AvailabilityEvaluator.Alert;
 import cloud.cholewa.light.monitor.AvailabilityEvaluator.Decision;
 import cloud.cholewa.light.monitor.AvailabilityEvaluator.Kind;
 import cloud.cholewa.light.monitor.AvailabilityEvaluator.Watched;
 import cloud.cholewa.light.occupancy.OccupancyRegistry;
-import cloud.cholewa.light.occupancy.OccupancySensor;
 import cloud.cholewa.light.occupancy.OccupancyTracker;
 import cloud.cholewa.light.occupancy.SensorBinding;
 import cloud.cholewa.light.occupancy.SensorKind;
@@ -36,6 +33,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -48,8 +46,9 @@ import java.util.stream.Stream;
 //- A Shelly light is unreachable as LightStateTracker says (a Gen1 light by a failed poll of /status, a Gen2
 //  light by its MQTT last will); a reachability not known (after a start) is not judged. The Eaton lights are not
 //  watched - amx-service and the frame server have their own health.
-//- A sensor is heard when it reports (OccupancyTracker); one never heard since the start counts from the start.
-//  The PIRs of the AMX system are not watched: they report only after dark.
+//- A sensor is heard when it reports (OccupancyTracker), a BLU Motion also by any packet a gateway heard of it
+//  (HAS-529); one never heard since the start counts from the start. The PIRs of the AMX system (they report only
+//  after dark) and the Shelly Motion Gen1 (it sleeps, no heartbeat - HAS-529) are not watched.
 //- The table changes only once the broker has taken the message; a notification that fails is tried again with
 //  the next pass, and neither fails nor stalls the pass for longer than PUBLISH_TIMEOUT
 @Slf4j
@@ -144,22 +143,18 @@ public class AvailabilityMonitor {
             .collectList();
     }
 
+    //the presence sensors and the BLU Motions; a BLU Motion by the last packet a gateway heard of it, motion or not
+    //(HAS-529). A Shelly Motion Gen1 sleeps on Wi-Fi with no heartbeat and a PIR of the AMX system reports only after
+    //dark: neither is watched - an open alert of one is closed without a word as no longer watched
     private List<Watched> sensors() {
-        final List<OccupancySensor> watched = occupancyRegistry.sensors().stream()
-            .filter(sensor -> !(sensor.binding() instanceof SensorBinding.EatonMotion))
-            .toList();
-        final Map<RoomName, Map<Long, RoomOccupancy.SensorView>> views = watched.stream()
-            .map(OccupancySensor::room)
-            .distinct()
-            .collect(Collectors.toMap(Function.identity(), room -> occupancyTracker.room(room).sensors().stream()
-                .collect(Collectors.toMap(RoomOccupancy.SensorView::id, Function.identity()))));
-        return watched.stream()
+        return occupancyRegistry.sensors().stream()
+            .filter(sensor -> sensor.binding() instanceof SensorBinding.Presence
+                || sensor.binding() instanceof SensorBinding.BluMotion)
             .map(sensor -> {
-                final RoomOccupancy.SensorView view = views.get(sensor.room()).get(sensor.id());
-                final LocalDateTime heard = view == null || view.lastReportAt() == null ? startedAt : view.lastReportAt();
+                final Optional<LocalDateTime> heard = occupancyTracker.lastHeardAt(sensor);
                 return new Watched(sensor.id(), sensor.name(), sensor.room().getValue(),
-                    sensor.kind() == SensorKind.PRESENCE ? Kind.PRESENCE_SENSOR : Kind.BATTERY_SENSOR, heard,
-                    view != null && view.lastReportAt() != null);
+                    sensor.kind() == SensorKind.PRESENCE ? Kind.PRESENCE_SENSOR : Kind.BATTERY_SENSOR,
+                    heard.orElse(startedAt), heard.isPresent());
             })
             .toList();
     }

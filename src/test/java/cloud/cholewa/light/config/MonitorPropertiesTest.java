@@ -27,7 +27,7 @@ class MonitorPropertiesTest {
         contextRunner
             .withPropertyValues("spring.profiles.active=home")
             .run(context -> assertThat(context.getBean(MonitorProperties.class)).isEqualTo(new MonitorProperties(
-                Duration.ofMinutes(5), Duration.ofHours(1), Duration.ofMinutes(30), Duration.ofHours(24))));
+                Duration.ofMinutes(5), Duration.ofHours(1), Duration.ofMinutes(30), Duration.ofHours(24), Duration.ofHours(24))));
     }
 
     //without the unit a bare number would bind as milliseconds: every light out after a failed poll
@@ -38,6 +38,14 @@ class MonitorPropertiesTest {
             .run(context -> assertThat(context.getBean(MonitorProperties.class).offlineAfter()).isEqualTo(Duration.ofMinutes(10)));
     }
 
+    //HAS-529: the reminder of a BLU Motion too - a bare 1440 is a day, not 1.44 s
+    @Test
+    void should_read_a_bare_battery_reminder_as_minutes() {
+        contextRunner
+            .withPropertyValues("spring.profiles.active=home", "light.monitor.battery-reminder-every=1440")
+            .run(context -> assertThat(context.getBean(MonitorProperties.class).batteryReminderEvery()).isEqualTo(Duration.ofDays(1)));
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {
         "light.monitor.offline-after=1",
@@ -46,6 +54,8 @@ class MonitorPropertiesTest {
         "light.monitor.sensor-silent-after=9",
         "light.monitor.battery-silent-after=59",
         "light.monitor.battery-silent-after=PT169H",
+        "light.monitor.battery-reminder-every=59",
+        "light.monitor.battery-reminder-every=PT169H",
         "light.monitor.offline-after="
     })
     void should_not_start_with_a_limit_out_of_its_range(final String value) {

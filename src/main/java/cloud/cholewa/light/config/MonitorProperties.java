@@ -17,7 +17,10 @@ import java.time.temporal.ChronoUnit;
  *                            light is polled every minute, so at least two failed polls
  * @param reminderEvery       how often an outage that goes on is repeated
  * @param sensorSilentAfter   how long a presence sensor may stay silent - it publishes its zone about once a minute
- * @param batterySilentAfter  how long a battery motion sensor may stay silent - it sends only when it senses something
+ * @param batterySilentAfter  how long no gateway may hear a BLU Motion - judged by the last packet of the device, which
+ *                            it sends without a motion too (HAS-529), not by its last motion
+ * @param batteryReminderEvery how often the silence of a BLU Motion that goes on is repeated - a battery or a range
+ *                            is nothing to hear of every hour (HAS-529)
  */
 @Validated
 @ConfigurationProperties(prefix = "light.monitor")
@@ -29,6 +32,8 @@ public record MonitorProperties(
     @NotNull @DurationMin(minutes = 10) @DurationMax(hours = 24) @DurationUnit(ChronoUnit.MINUTES)
     Duration sensorSilentAfter,
     @NotNull @DurationMin(hours = 1) @DurationMax(days = 7) @DurationUnit(ChronoUnit.MINUTES)
-    Duration batterySilentAfter
+    Duration batterySilentAfter,
+    @NotNull @DurationMin(hours = 1) @DurationMax(days = 7) @DurationUnit(ChronoUnit.MINUTES)
+    Duration batteryReminderEvery
 ) {
 }
